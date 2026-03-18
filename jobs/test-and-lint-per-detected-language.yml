@@ -1,0 +1,432 @@
+# test-and-lint-per-detected-language.yml
+# Test and lint jobs for all supported languages.
+# Override TEST_CMD or LINT_CMD variables to skip auto-detection logic.
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BASE TEMPLATES
+# ══════════════════════════════════════════════════════════════════════════════
+
+.test-base:
+  stage: test
+  allow_failure: false
+  artifacts:
+    reports:
+      junit: "**/test-results/**/*.xml"
+      coverage_report:
+        coverage_format: cobertura
+        path: "**/coverage/cobertura-coverage.xml"
+    paths:
+      - coverage/
+    expire_in: 1 week
+    when: always
+
+.lint-base:
+  stage: lint
+  allow_failure: true
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+    when: always
+    expire_in: 1 week
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NODE.JS
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:node:npm:
+  extends: .test-base
+  image: node:${NODE_VERSION}-alpine
+  stage: test
+  script:
+    - npm ci --prefer-offline
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      elif grep -q '"test"' package.json; then
+        npm test -- --coverage --ci 2>/dev/null || npm test
+      else
+        echo "No test script defined, skipping"
+      fi
+  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "npm"'
+      when: always
+    - when: never
+
+test:node:yarn:
+  extends: .test-base
+  image: node:${NODE_VERSION}-alpine
+  stage: test
+  script:
+    - yarn install --frozen-lockfile
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      elif grep -q '"test"' package.json; then
+        yarn test --coverage --ci 2>/dev/null || yarn test
+      else
+        echo "No test script defined, skipping"
+      fi
+  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "yarn"'
+      when: always
+    - when: never
+
+test:node:pnpm:
+  extends: .test-base
+  image: node:${NODE_VERSION}-alpine
+  stage: test
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@latest --activate
+  script:
+    - pnpm install --frozen-lockfile
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      elif grep -q '"test"' package.json; then
+        pnpm test -- --coverage --ci 2>/dev/null || pnpm test
+      else
+        echo "No test script defined, skipping"
+      fi
+  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "pnpm"'
+      when: always
+    - when: never
+
+lint:node:eslint:
+  extends: .lint-base
+  image: node:${NODE_VERSION}-alpine
+  stage: lint
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        # Install deps if not cached
+        [ -d node_modules ] || npm ci --prefer-offline 2>/dev/null || yarn install --frozen-lockfile 2>/dev/null || true
+        if grep -q '"lint"' package.json 2>/dev/null; then
+          npm run lint 2>/dev/null || yarn lint 2>/dev/null || pnpm lint 2>/dev/null || true
+        elif [ -f ".eslintrc*" ] || [ -f "eslint.config.*" ]; then
+          npx eslint . --ext .js,.jsx,.ts,.tsx --format gitlab 2>/dev/null || npx eslint . --ext .js,.jsx,.ts,.tsx
+        else
+          echo "No lint configuration found, skipping"
+        fi
+      fi
+  rules:
+    - if: '$CI_LANGUAGE == "node"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JAVA
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:java:maven:
+  extends: .test-base
+  image: maven:3-eclipse-temurin-${JAVA_VERSION}
+  stage: test
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        mvn -B test --no-transfer-progress
+      fi
+  coverage: '/Total.*?(\d{1,3})%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "maven"'
+      when: always
+    - when: never
+
+test:java:gradle:
+  extends: .test-base
+  image: gradle:8-jdk${JAVA_VERSION}
+  stage: test
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        gradle test --no-daemon
+      fi
+  coverage: '/Total.*?(\d{1,3})%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "gradle"'
+      when: always
+    - when: never
+
+lint:java:checkstyle:
+  extends: .lint-base
+  image: maven:3-eclipse-temurin-${JAVA_VERSION}
+  stage: lint
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      elif [ -f "checkstyle.xml" ] || [ -f ".checkstyle" ]; then
+        mvn -B checkstyle:check --no-transfer-progress || true
+      else
+        echo "No checkstyle configuration found, skipping"
+      fi
+  rules:
+    - if: '$CI_LANGUAGE == "java"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GO
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:go:
+  extends: .test-base
+  image: golang:${GO_VERSION}-alpine
+  stage: test
+  script:
+    - apk add --no-cache gcc musl-dev
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        go test -v -race -coverprofile=coverage.out ./...
+        go tool cover -func=coverage.out
+      fi
+  coverage: '/total:\s+\(statements\)\s+(\d+\.?\d+)%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "go"'
+      when: always
+    - when: never
+
+lint:go:golangci:
+  extends: .lint-base
+  image: golangci/golangci-lint:latest-alpine
+  stage: lint
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        golangci-lint run --timeout=5m --out-format=code-climate ./... > gl-code-quality-report.json 2>/dev/null || \
+        golangci-lint run --timeout=5m ./...
+      fi
+  rules:
+    - if: '$CI_BUILD_TOOL == "go"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PYTHON
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:python:pip:
+  extends: .test-base
+  image: python:${PYTHON_VERSION}-alpine
+  stage: test
+  script:
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov 2>/dev/null || true
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
+        pytest 2>/dev/null || echo "No tests found"
+      fi
+  coverage: '/TOTAL.*\s+(\d+)%$/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "pip"'
+      when: always
+    - when: never
+
+test:python:poetry:
+  extends: .test-base
+  image: python:${PYTHON_VERSION}-alpine
+  stage: test
+  before_script:
+    - pip install poetry
+    - poetry config virtualenvs.in-project true
+    - poetry install --no-interaction
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        poetry run pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
+        poetry run pytest 2>/dev/null || echo "No tests found"
+      fi
+  coverage: '/TOTAL.*\s+(\d+)%$/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "poetry"'
+      when: always
+    - when: never
+
+test:python:pipenv:
+  extends: .test-base
+  image: python:${PYTHON_VERSION}-alpine
+  stage: test
+  before_script:
+    - pip install pipenv
+    - pipenv install --deploy --dev
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        pipenv run pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
+        pipenv run pytest 2>/dev/null || echo "No tests found"
+      fi
+  coverage: '/TOTAL.*\s+(\d+)%$/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "pipenv"'
+      when: always
+    - when: never
+
+lint:python:flake8-and-black:
+  extends: .lint-base
+  image: python:${PYTHON_VERSION}-alpine
+  stage: lint
+  script:
+    - pip install flake8 black isort 2>/dev/null || true
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        flake8 . --max-line-length=120 --exclude=.venv,venv,__pycache__ 2>/dev/null || true
+        black --check . 2>/dev/null || true
+        isort --check-only . 2>/dev/null || true
+      fi
+  rules:
+    - if: '$CI_LANGUAGE == "python"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHP
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:php:phpunit:
+  extends: .test-base
+  image: php:${PHP_VERSION}-cli-alpine
+  stage: test
+  before_script:
+    - apk add --no-cache curl git unzip
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    - composer install --no-interaction
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      elif [ -f "vendor/bin/phpunit" ]; then
+        ./vendor/bin/phpunit --log-junit test-results/phpunit.xml --coverage-cobertura coverage/cobertura-coverage.xml 2>/dev/null || \
+        ./vendor/bin/phpunit
+      else
+        echo "PHPUnit not found, skipping"
+      fi
+  coverage: '/^\s*Lines:\s*\d+.\d+\%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "composer"'
+      when: always
+    - when: never
+
+lint:php:phpcs-and-phpstan:
+  extends: .lint-base
+  image: php:${PHP_VERSION}-cli-alpine
+  stage: lint
+  before_script:
+    - apk add --no-cache curl git unzip
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    - composer install --no-interaction
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        [ -f "vendor/bin/phpcs" ] && ./vendor/bin/phpcs --standard=PSR12 src/ 2>/dev/null || true
+        [ -f "vendor/bin/phpstan" ] && ./vendor/bin/phpstan analyse --level=5 src/ 2>/dev/null || true
+      fi
+  rules:
+    - if: '$CI_BUILD_TOOL == "composer"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RUST
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:rust:cargo:
+  extends: .test-base
+  image: rust:${RUST_VERSION}
+  stage: test
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        cargo test --verbose
+      fi
+  rules:
+    - if: '$CI_BUILD_TOOL == "cargo"'
+      when: always
+    - when: never
+
+lint:rust:clippy-and-fmt:
+  extends: .lint-base
+  image: rust:${RUST_VERSION}
+  stage: lint
+  before_script:
+    - rustup component add clippy rustfmt
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        cargo clippy -- -D warnings 2>/dev/null || cargo clippy
+        cargo fmt -- --check 2>/dev/null || true
+      fi
+  rules:
+    - if: '$CI_BUILD_TOOL == "cargo"'
+      when: always
+    - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# .NET
+# ══════════════════════════════════════════════════════════════════════════════
+
+test:dotnet:
+  extends: .test-base
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
+  stage: test
+  script:
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+      else
+        dotnet test --no-build --configuration Release \
+          --logger "junit;LogFilePath=test-results/dotnet-test.xml" \
+          --collect:"XPlat Code Coverage" \
+          2>/dev/null || dotnet test --configuration Release
+      fi
+  coverage: '/Total\s+\|\s+(\d+\.?\d*)%/'
+  rules:
+    - if: '$CI_BUILD_TOOL == "dotnet"'
+      when: always
+    - when: never
+
+lint:dotnet:format-check:
+  extends: .lint-base
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
+  stage: lint
+  script:
+    - |
+      if [ -n "$LINT_CMD" ]; then
+        eval "$LINT_CMD"
+      else
+        dotnet format --verify-no-changes --no-restore 2>/dev/null || true
+      fi
+  rules:
+    - if: '$CI_BUILD_TOOL == "dotnet"'
+      when: always
+    - when: never

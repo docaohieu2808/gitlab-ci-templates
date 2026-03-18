@@ -1,0 +1,93 @@
+# auto-pipeline.yml — Zero-config GitLab CI entry point
+# Usage: include this file and everything is auto-configured
+#
+# include:
+#   - project: 'hieudc/gitlab-ci-templates'
+#     file: '/auto-pipeline.yml'
+
+variables:
+  # --- Runtime overrides (set in CI/CD variables or .gitlab-ci.yml) ---
+  DEPLOY_TARGET: ""               # ssh-build|docker-compose|s3-cloudfront|rsync|k8s|helm|vercel|netlify|...
+  DEPLOY_HOST: ""                 # SSH host
+  DEPLOY_USER: "deploy"           # SSH user
+  DEPLOY_PATH: "/opt/app"         # Remote deploy path
+  DEPLOY_PORT: "22"               # SSH port
+  DEPLOY_KEY: ""                  # SSH private key (CI/CD variable)
+
+  # Docker
+  DOCKER_IMAGE: ""                # Override auto-detected image name
+  DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
+  DOCKER_REGISTRY: "$CI_REGISTRY"
+  DOCKER_REGISTRY_USER: "$CI_REGISTRY_USER"
+  DOCKER_REGISTRY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  DOCKERFILE_PATH: "Dockerfile"
+  DOCKER_BUILD_ARGS: ""
+
+  # Build
+  BUILD_CMD: ""                   # Override auto-detected build command
+  TEST_CMD: ""                    # Override auto-detected test command
+  LINT_CMD: ""                    # Override auto-detected lint command
+  NODE_VERSION: "20"
+  JAVA_VERSION: "17"
+  GO_VERSION: "1.22"
+  PYTHON_VERSION: "3.12"
+  PHP_VERSION: "8.3"
+  RUST_VERSION: "stable"
+  DOTNET_VERSION: "8.0"
+
+  # Security
+  SECURITY_SCAN_ENABLED: "true"
+  SAST_ENABLED: "true"
+  DEPENDENCY_SCAN_ENABLED: "true"
+  SECRET_DETECTION_ENABLED: "true"
+  CONTAINER_SCAN_ENABLED: "true"
+
+  # Deploy targets config
+  S3_BUCKET: ""
+  S3_REGION: "us-east-1"
+  CLOUDFRONT_DISTRIBUTION_ID: ""
+  RSYNC_OPTIONS: "-avz --delete"
+  K8S_NAMESPACE: "default"
+  K8S_DEPLOYMENT: ""
+  K8S_CONTAINER: "app"
+  HELM_RELEASE: ""
+  HELM_CHART: "./helm"
+  HELM_NAMESPACE: "default"
+  VERCEL_TOKEN: ""
+  VERCEL_ORG_ID: ""
+  VERCEL_PROJECT_ID: ""
+  NETLIFY_AUTH_TOKEN: ""
+  NETLIFY_SITE_ID: ""
+  FTP_HOST: ""
+  FTP_USER: ""
+  FTP_PASSWORD: ""
+  GCS_BUCKET: ""
+  FIREBASE_TOKEN: ""
+  FIREBASE_PROJECT: ""
+  HEROKU_APP: ""
+  HEROKU_API_KEY: ""
+  ECS_CLUSTER: ""
+  ECS_SERVICE: ""
+  LAMBDA_FUNCTION: ""
+  AZURE_WEBAPP_NAME: ""
+  AZURE_RESOURCE_GROUP: ""
+  CAPISTRANO_STAGE: "production"
+  ANSIBLE_PLAYBOOK: "deploy.yml"
+  ANSIBLE_INVENTORY: "inventory/production"
+
+stages:
+  - detect
+  - build
+  - test
+  - lint
+  - security-scan
+  - docker-build
+  - deploy
+
+include:
+  - local: '/jobs/detect-language-and-build-tool.yml'
+  - local: '/jobs/build-per-detected-language.yml'
+  - local: '/jobs/test-and-lint-per-detected-language.yml'
+  - local: '/jobs/security-sast-dependency-secret-container-scan.yml'
+  - local: '/jobs/docker-build-tag-and-push-to-registry.yml'
+  - local: '/jobs/deploy-all-targets-ssh-k8s-helm-s3-vercel-netlify-etc.yml'

@@ -1,0 +1,4 @@
+# plans, docs, and claude kit dirs — local tooling only, not part of the template
+plans/
+docs/
+.claude/
