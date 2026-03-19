@@ -91,7 +91,7 @@ test:
           ;;
       esac
   rules:
-    - when: on_success
+    - if: '$CI_PIPELINE_SOURCE'
 
 lint:
   stage: lint
@@ -151,4 +151,4 @@ lint:
           ;;
       esac
   rules:
-    - when: on_success
+    - if: '$CI_PIPELINE_SOURCE'
