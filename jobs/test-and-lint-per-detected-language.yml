@@ -4,43 +4,6 @@
 test:
   stage: test
   image: node:${NODE_VERSION}-alpine
-  needs:
-    - job: detect:node:npm
-      artifacts: true
-      optional: true
-    - job: detect:node:yarn
-      artifacts: true
-      optional: true
-    - job: detect:node:pnpm
-      artifacts: true
-      optional: true
-    - job: detect:java:maven
-      artifacts: true
-      optional: true
-    - job: detect:java:gradle
-      artifacts: true
-      optional: true
-    - job: detect:go
-      artifacts: true
-      optional: true
-    - job: detect:python:pip
-      artifacts: true
-      optional: true
-    - job: detect:python:poetry
-      artifacts: true
-      optional: true
-    - job: detect:python:pipenv
-      artifacts: true
-      optional: true
-    - job: detect:php:composer
-      artifacts: true
-      optional: true
-    - job: detect:rust:cargo
-      artifacts: true
-      optional: true
-    - job: detect:dotnet
-      artifacts: true
-      optional: true
   allow_failure: false
   artifacts:
     reports:
@@ -133,43 +96,6 @@ test:
 lint:
   stage: lint
   image: node:${NODE_VERSION}-alpine
-  needs:
-    - job: detect:node:npm
-      artifacts: true
-      optional: true
-    - job: detect:node:yarn
-      artifacts: true
-      optional: true
-    - job: detect:node:pnpm
-      artifacts: true
-      optional: true
-    - job: detect:java:maven
-      artifacts: true
-      optional: true
-    - job: detect:java:gradle
-      artifacts: true
-      optional: true
-    - job: detect:go
-      artifacts: true
-      optional: true
-    - job: detect:python:pip
-      artifacts: true
-      optional: true
-    - job: detect:python:poetry
-      artifacts: true
-      optional: true
-    - job: detect:python:pipenv
-      artifacts: true
-      optional: true
-    - job: detect:php:composer
-      artifacts: true
-      optional: true
-    - job: detect:rust:cargo
-      artifacts: true
-      optional: true
-    - job: detect:dotnet
-      artifacts: true
-      optional: true
   allow_failure: true
   script:
     - echo "Linting ${CI_LANGUAGE}/${CI_BUILD_TOOL}"
