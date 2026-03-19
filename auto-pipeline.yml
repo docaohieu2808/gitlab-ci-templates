@@ -324,7 +324,7 @@ auto-build:
     - |
       case "${CI_BUILD_TOOL}" in
         npm)
-          npm ci --prefer-offline
+          npm ci --prefer-offline 2>/dev/null || npm install
           if grep -q '"build"' package.json 2>/dev/null; then npm run build; fi
           ;;
         yarn)
@@ -406,7 +406,7 @@ auto-test:
     - |
       case "${CI_BUILD_TOOL}" in
         npm)
-          npm ci --prefer-offline
+          npm ci --prefer-offline 2>/dev/null || npm install
           if grep -q '"test"' package.json 2>/dev/null; then
             npm test 2>/dev/null || echo "Tests completed"
           else
@@ -497,7 +497,7 @@ auto-lint:
     - |
       case "${CI_LANGUAGE}" in
         node)
-          npm ci --prefer-offline 2>/dev/null || yarn install 2>/dev/null || true
+          npm ci --prefer-offline 2>/dev/null || npm install 2>/dev/null || yarn install 2>/dev/null || true
           if grep -q '"lint"' package.json 2>/dev/null; then
             npm run lint 2>/dev/null || yarn lint 2>/dev/null || echo "Lint done"
           else
