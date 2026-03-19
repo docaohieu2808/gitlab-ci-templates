@@ -285,7 +285,7 @@ detect:dotnet:
 # set by the detect stage. Override with BUILD_CMD variable to run custom cmd.
 # ══════════════════════════════════════════════════════════════════════════════
 
-build:
+auto-build:
   stage: build
   image: node:${NODE_VERSION}-alpine
   cache:
@@ -380,7 +380,7 @@ build:
 # Override with TEST_CMD variable to run a custom test command.
 # ══════════════════════════════════════════════════════════════════════════════
 
-test:
+auto-test:
   stage: test
   image: node:${NODE_VERSION}-alpine
   allow_failure: false
@@ -478,7 +478,7 @@ test:
 # Override with LINT_CMD variable. allow_failure: true (linting is advisory).
 # ══════════════════════════════════════════════════════════════════════════════
 
-lint:
+auto-lint:
   stage: lint
   image: node:${NODE_VERSION}-alpine
   allow_failure: true
