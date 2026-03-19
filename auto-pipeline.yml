@@ -85,9 +85,15 @@ stages:
   - deploy
 
 include:
-  - local: '/jobs/detect-language-and-build-tool.yml'
-  - local: '/jobs/build-per-detected-language.yml'
-  - local: '/jobs/test-and-lint-per-detected-language.yml'
-  - local: '/jobs/security-sast-dependency-secret-container-scan.yml'
-  - local: '/jobs/docker-build-tag-and-push-to-registry.yml'
-  - local: '/jobs/deploy-all-targets-ssh-k8s-helm-s3-vercel-netlify-etc.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/detect-language-and-build-tool.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/build-per-detected-language.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/test-and-lint-per-detected-language.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/security-sast-dependency-secret-container-scan.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/docker-build-tag-and-push-to-registry.yml'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+    file: '/jobs/deploy-all-targets-ssh-k8s-helm-s3-vercel-netlify-etc.yml'
