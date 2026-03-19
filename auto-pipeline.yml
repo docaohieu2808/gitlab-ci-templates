@@ -2,7 +2,7 @@
 # Usage: include this file and everything is auto-configured
 #
 # include:
-#   - project: 'hieudc/gitlab-ci-templates'
+#   - project: 'cicd-auto-pipeline/gitlab-ci-templates'
 #     file: '/auto-pipeline.yml'
 
 variables:

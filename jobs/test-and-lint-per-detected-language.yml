@@ -1,6 +1,8 @@
 # test-and-lint-per-detected-language.yml
 # Test and lint jobs for all supported languages.
 # Override TEST_CMD or LINT_CMD variables to skip auto-detection logic.
+# NOTE: rules: exists: is evaluated at pipeline creation time (unlike dotenv vars),
+#       so this correctly gates jobs without waiting for the detect stage.
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BASE TEMPLATES
@@ -37,6 +39,10 @@ test:node:npm:
   extends: .test-base
   image: node:${NODE_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:node:npm
+      artifacts: true
+      optional: true
   script:
     - npm ci --prefer-offline
     - |
@@ -49,7 +55,8 @@ test:node:npm:
       fi
   coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "npm"'
+    - exists:
+        - package.json
       when: always
     - when: never
 
@@ -57,6 +64,10 @@ test:node:yarn:
   extends: .test-base
   image: node:${NODE_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:node:yarn
+      artifacts: true
+      optional: true
   script:
     - yarn install --frozen-lockfile
     - |
@@ -69,7 +80,8 @@ test:node:yarn:
       fi
   coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "yarn"'
+    - exists:
+        - yarn.lock
       when: always
     - when: never
 
@@ -77,6 +89,10 @@ test:node:pnpm:
   extends: .test-base
   image: node:${NODE_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:node:pnpm
+      artifacts: true
+      optional: true
   before_script:
     - corepack enable
     - corepack prepare pnpm@latest --activate
@@ -92,7 +108,8 @@ test:node:pnpm:
       fi
   coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "pnpm"'
+    - exists:
+        - pnpm-lock.yaml
       when: always
     - when: never
 
@@ -100,6 +117,16 @@ lint:node:eslint:
   extends: .lint-base
   image: node:${NODE_VERSION}-alpine
   stage: lint
+  needs:
+    - job: detect:node:npm
+      artifacts: true
+      optional: true
+    - job: detect:node:yarn
+      artifacts: true
+      optional: true
+    - job: detect:node:pnpm
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$LINT_CMD" ]; then
@@ -116,7 +143,8 @@ lint:node:eslint:
         fi
       fi
   rules:
-    - if: '$CI_LANGUAGE == "node"'
+    - exists:
+        - package.json
       when: always
     - when: never
 
@@ -128,6 +156,10 @@ test:java:maven:
   extends: .test-base
   image: maven:3-eclipse-temurin-${JAVA_VERSION}
   stage: test
+  needs:
+    - job: detect:java:maven
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$TEST_CMD" ]; then
@@ -137,7 +169,8 @@ test:java:maven:
       fi
   coverage: '/Total.*?(\d{1,3})%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "maven"'
+    - exists:
+        - pom.xml
       when: always
     - when: never
 
@@ -145,6 +178,10 @@ test:java:gradle:
   extends: .test-base
   image: gradle:8-jdk${JAVA_VERSION}
   stage: test
+  needs:
+    - job: detect:java:gradle
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$TEST_CMD" ]; then
@@ -154,7 +191,9 @@ test:java:gradle:
       fi
   coverage: '/Total.*?(\d{1,3})%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "gradle"'
+    - exists:
+        - build.gradle
+        - build.gradle.kts
       when: always
     - when: never
 
@@ -162,6 +201,13 @@ lint:java:checkstyle:
   extends: .lint-base
   image: maven:3-eclipse-temurin-${JAVA_VERSION}
   stage: lint
+  needs:
+    - job: detect:java:maven
+      artifacts: true
+      optional: true
+    - job: detect:java:gradle
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$LINT_CMD" ]; then
@@ -172,7 +218,10 @@ lint:java:checkstyle:
         echo "No checkstyle configuration found, skipping"
       fi
   rules:
-    - if: '$CI_LANGUAGE == "java"'
+    - exists:
+        - pom.xml
+        - build.gradle
+        - build.gradle.kts
       when: always
     - when: never
 
@@ -184,6 +233,10 @@ test:go:
   extends: .test-base
   image: golang:${GO_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:go
+      artifacts: true
+      optional: true
   script:
     - apk add --no-cache gcc musl-dev
     - |
@@ -195,7 +248,8 @@ test:go:
       fi
   coverage: '/total:\s+\(statements\)\s+(\d+\.?\d+)%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "go"'
+    - exists:
+        - go.mod
       when: always
     - when: never
 
@@ -203,6 +257,10 @@ lint:go:golangci:
   extends: .lint-base
   image: golangci/golangci-lint:latest-alpine
   stage: lint
+  needs:
+    - job: detect:go
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$LINT_CMD" ]; then
@@ -212,7 +270,8 @@ lint:go:golangci:
         golangci-lint run --timeout=5m ./...
       fi
   rules:
-    - if: '$CI_BUILD_TOOL == "go"'
+    - exists:
+        - go.mod
       when: always
     - when: never
 
@@ -224,6 +283,10 @@ test:python:pip:
   extends: .test-base
   image: python:${PYTHON_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:python:pip
+      artifacts: true
+      optional: true
   script:
     - pip install --upgrade pip
     - pip install -r requirements.txt
@@ -237,7 +300,8 @@ test:python:pip:
       fi
   coverage: '/TOTAL.*\s+(\d+)%$/'
   rules:
-    - if: '$CI_BUILD_TOOL == "pip"'
+    - exists:
+        - requirements.txt
       when: always
     - when: never
 
@@ -245,6 +309,10 @@ test:python:poetry:
   extends: .test-base
   image: python:${PYTHON_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:python:poetry
+      artifacts: true
+      optional: true
   before_script:
     - pip install poetry
     - poetry config virtualenvs.in-project true
@@ -259,7 +327,9 @@ test:python:poetry:
       fi
   coverage: '/TOTAL.*\s+(\d+)%$/'
   rules:
-    - if: '$CI_BUILD_TOOL == "poetry"'
+    - exists:
+        - pyproject.toml
+        - poetry.lock
       when: always
     - when: never
 
@@ -267,6 +337,10 @@ test:python:pipenv:
   extends: .test-base
   image: python:${PYTHON_VERSION}-alpine
   stage: test
+  needs:
+    - job: detect:python:pipenv
+      artifacts: true
+      optional: true
   before_script:
     - pip install pipenv
     - pipenv install --deploy --dev
@@ -280,7 +354,8 @@ test:python:pipenv:
       fi
   coverage: '/TOTAL.*\s+(\d+)%$/'
   rules:
-    - if: '$CI_BUILD_TOOL == "pipenv"'
+    - exists:
+        - Pipfile
       when: always
     - when: never
 
@@ -288,6 +363,16 @@ lint:python:flake8-and-black:
   extends: .lint-base
   image: python:${PYTHON_VERSION}-alpine
   stage: lint
+  needs:
+    - job: detect:python:pip
+      artifacts: true
+      optional: true
+    - job: detect:python:poetry
+      artifacts: true
+      optional: true
+    - job: detect:python:pipenv
+      artifacts: true
+      optional: true
   script:
     - pip install flake8 black isort 2>/dev/null || true
     - |
@@ -299,7 +384,10 @@ lint:python:flake8-and-black:
         isort --check-only . 2>/dev/null || true
       fi
   rules:
-    - if: '$CI_LANGUAGE == "python"'
+    - exists:
+        - requirements.txt
+        - pyproject.toml
+        - Pipfile
       when: always
     - when: never
 
@@ -311,6 +399,10 @@ test:php:phpunit:
   extends: .test-base
   image: php:${PHP_VERSION}-cli-alpine
   stage: test
+  needs:
+    - job: detect:php:composer
+      artifacts: true
+      optional: true
   before_script:
     - apk add --no-cache curl git unzip
     - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
@@ -327,7 +419,8 @@ test:php:phpunit:
       fi
   coverage: '/^\s*Lines:\s*\d+.\d+\%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "composer"'
+    - exists:
+        - composer.json
       when: always
     - when: never
 
@@ -335,6 +428,10 @@ lint:php:phpcs-and-phpstan:
   extends: .lint-base
   image: php:${PHP_VERSION}-cli-alpine
   stage: lint
+  needs:
+    - job: detect:php:composer
+      artifacts: true
+      optional: true
   before_script:
     - apk add --no-cache curl git unzip
     - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
@@ -348,7 +445,8 @@ lint:php:phpcs-and-phpstan:
         [ -f "vendor/bin/phpstan" ] && ./vendor/bin/phpstan analyse --level=5 src/ 2>/dev/null || true
       fi
   rules:
-    - if: '$CI_BUILD_TOOL == "composer"'
+    - exists:
+        - composer.json
       when: always
     - when: never
 
@@ -360,6 +458,10 @@ test:rust:cargo:
   extends: .test-base
   image: rust:${RUST_VERSION}
   stage: test
+  needs:
+    - job: detect:rust:cargo
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$TEST_CMD" ]; then
@@ -368,7 +470,8 @@ test:rust:cargo:
         cargo test --verbose
       fi
   rules:
-    - if: '$CI_BUILD_TOOL == "cargo"'
+    - exists:
+        - Cargo.toml
       when: always
     - when: never
 
@@ -376,6 +479,10 @@ lint:rust:clippy-and-fmt:
   extends: .lint-base
   image: rust:${RUST_VERSION}
   stage: lint
+  needs:
+    - job: detect:rust:cargo
+      artifacts: true
+      optional: true
   before_script:
     - rustup component add clippy rustfmt
   script:
@@ -387,7 +494,8 @@ lint:rust:clippy-and-fmt:
         cargo fmt -- --check 2>/dev/null || true
       fi
   rules:
-    - if: '$CI_BUILD_TOOL == "cargo"'
+    - exists:
+        - Cargo.toml
       when: always
     - when: never
 
@@ -399,6 +507,10 @@ test:dotnet:
   extends: .test-base
   image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
   stage: test
+  needs:
+    - job: detect:dotnet
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$TEST_CMD" ]; then
@@ -411,7 +523,9 @@ test:dotnet:
       fi
   coverage: '/Total\s+\|\s+(\d+\.?\d*)%/'
   rules:
-    - if: '$CI_BUILD_TOOL == "dotnet"'
+    - exists:
+        - "*.csproj"
+        - "*.sln"
       when: always
     - when: never
 
@@ -419,6 +533,10 @@ lint:dotnet:format-check:
   extends: .lint-base
   image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
   stage: lint
+  needs:
+    - job: detect:dotnet
+      artifacts: true
+      optional: true
   script:
     - |
       if [ -n "$LINT_CMD" ]; then
@@ -427,6 +545,8 @@ lint:dotnet:format-check:
         dotnet format --verify-no-changes --no-restore 2>/dev/null || true
       fi
   rules:
-    - if: '$CI_BUILD_TOOL == "dotnet"'
+    - exists:
+        - "*.csproj"
+        - "*.sln"
       when: always
     - when: never

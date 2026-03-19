@@ -3,7 +3,7 @@
 # Copy relevant sections into your .gitlab-ci.yml as needed.
 
 include:
-  - project: 'hieudc/gitlab-ci-templates'
+  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
     file: '/auto-pipeline.yml'
 
 # ── Override global variables ─────────────────────────────────────────────────
