@@ -1,26 +1,54 @@
 # build-per-detected-language.yml
-# Build jobs for all supported languages, triggered by file-existence rules.
-# Override BUILD_CMD variable to skip auto-detection logic.
-# NOTE: rules: exists: is evaluated at pipeline creation time (unlike dotenv vars),
-#       so this correctly gates jobs without waiting for the detect stage.
+# Single build job that uses detect stage dotenv output to run correct commands.
+# Uses `rules: - when: on_success` so it always runs if detect succeeded.
 
-.build-base:
+build:
   stage: build
+  image: node:${NODE_VERSION}-alpine
+  needs:
+    - job: detect:node:npm
+      artifacts: true
+      optional: true
+    - job: detect:node:yarn
+      artifacts: true
+      optional: true
+    - job: detect:node:pnpm
+      artifacts: true
+      optional: true
+    - job: detect:java:maven
+      artifacts: true
+      optional: true
+    - job: detect:java:gradle
+      artifacts: true
+      optional: true
+    - job: detect:go
+      artifacts: true
+      optional: true
+    - job: detect:python:pip
+      artifacts: true
+      optional: true
+    - job: detect:python:poetry
+      artifacts: true
+      optional: true
+    - job: detect:python:pipenv
+      artifacts: true
+      optional: true
+    - job: detect:php:composer
+      artifacts: true
+      optional: true
+    - job: detect:rust:cargo
+      artifacts: true
+      optional: true
+    - job: detect:dotnet
+      artifacts: true
+      optional: true
   cache:
-    key: "${CI_COMMIT_REF_SLUG}-${CI_LANGUAGE}-${CI_BUILD_TOOL}"
+    key: "${CI_COMMIT_REF_SLUG}-build"
     paths:
       - node_modules/
       - .npm/
-      - .yarn/
-      - .pnpm-store/
-      - ~/.m2/repository/
-      - ~/.gradle/caches/
-      - ~/go/pkg/mod/
-      - ~/.cache/pip/
-      - ~/.cache/pypoetry/
       - vendor/
       - target/
-      - ~/.cargo/registry/
   artifacts:
     paths:
       - dist/
@@ -30,330 +58,72 @@
       - public/
       - .next/
       - bin/
+      - publish/
+      - vendor/
     expire_in: 1 hour
     when: on_success
-
-# ── Node.js / npm ─────────────────────────────────────────────────────────────
-build:node:npm:
-  extends: .build-base
-  image: node:${NODE_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:node:npm
-      artifacts: true
-      optional: true
   script:
-    - npm ci --prefer-offline
+    - echo "Language=${CI_LANGUAGE} Tool=${CI_BUILD_TOOL}"
+    - |
+      if [ -z "$CI_LANGUAGE" ]; then
+        echo "No language detected — skipping build"
+        exit 0
+      fi
     - |
       if [ -n "$BUILD_CMD" ]; then
+        echo "Using custom BUILD_CMD"
         eval "$BUILD_CMD"
-      elif grep -q '"build"' package.json; then
-        npm run build
-      else
-        echo "No build script found, skipping build step"
+        exit 0
       fi
-  rules:
-    - exists:
-        - package.json
-      when: always
-    - when: never
-
-# ── Node.js / yarn ────────────────────────────────────────────────────────────
-build:node:yarn:
-  extends: .build-base
-  image: node:${NODE_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:node:yarn
-      artifacts: true
-      optional: true
-  script:
-    - yarn install --frozen-lockfile
     - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      elif grep -q '"build"' package.json; then
-        yarn build
-      else
-        echo "No build script found, skipping build step"
-      fi
+      case "${CI_BUILD_TOOL}" in
+        npm)
+          npm ci --prefer-offline
+          if grep -q '"build"' package.json 2>/dev/null; then npm run build; fi
+          ;;
+        yarn)
+          yarn install --frozen-lockfile
+          if grep -q '"build"' package.json 2>/dev/null; then yarn build; fi
+          ;;
+        pnpm)
+          corepack enable && corepack prepare pnpm@latest --activate
+          pnpm install --frozen-lockfile
+          if grep -q '"build"' package.json 2>/dev/null; then pnpm run build; fi
+          ;;
+        maven)
+          mvn -B package -DskipTests --no-transfer-progress
+          ;;
+        gradle)
+          gradle build -x test --no-daemon
+          ;;
+        go)
+          go build -v -o bin/ ./...
+          ;;
+        pip)
+          pip install --upgrade pip && pip install -r requirements.txt
+          if [ -f "setup.py" ]; then python setup.py build; fi
+          ;;
+        poetry)
+          pip install poetry && poetry install --no-interaction
+          poetry build || true
+          ;;
+        pipenv)
+          pip install pipenv && pipenv install --deploy
+          ;;
+        composer)
+          apk add --no-cache curl git unzip
+          curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+          composer install --no-dev --optimize-autoloader --no-interaction
+          ;;
+        cargo)
+          cargo build --release
+          ;;
+        dotnet)
+          dotnet restore && dotnet build --configuration Release --no-restore
+          ;;
+        *)
+          echo "Unknown tool: ${CI_BUILD_TOOL} — skipping"
+          ;;
+      esac
   rules:
-    - exists:
-        - yarn.lock
-      when: always
-    - when: never
-
-# ── Node.js / pnpm ────────────────────────────────────────────────────────────
-build:node:pnpm:
-  extends: .build-base
-  image: node:${NODE_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:node:pnpm
-      artifacts: true
-      optional: true
-  before_script:
-    - corepack enable
-    - corepack prepare pnpm@latest --activate
-  script:
-    - pnpm install --frozen-lockfile
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      elif grep -q '"build"' package.json; then
-        pnpm run build
-      else
-        echo "No build script found, skipping build step"
-      fi
-  rules:
-    - exists:
-        - pnpm-lock.yaml
-      when: always
-    - when: never
-
-# ── Java / Maven ──────────────────────────────────────────────────────────────
-build:java:maven:
-  extends: .build-base
-  image: maven:3-eclipse-temurin-${JAVA_VERSION}
-  stage: build
-  needs:
-    - job: detect:java:maven
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        mvn -B package -DskipTests --no-transfer-progress
-      fi
-  artifacts:
-    paths:
-      - target/*.jar
-      - target/*.war
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - pom.xml
-      when: always
-    - when: never
-
-# ── Java / Gradle ─────────────────────────────────────────────────────────────
-build:java:gradle:
-  extends: .build-base
-  image: gradle:8-jdk${JAVA_VERSION}
-  stage: build
-  needs:
-    - job: detect:java:gradle
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        gradle build -x test --no-daemon
-      fi
-  artifacts:
-    paths:
-      - build/libs/*.jar
-      - build/libs/*.war
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - build.gradle
-        - build.gradle.kts
-      when: always
-    - when: never
-
-# ── Go ────────────────────────────────────────────────────────────────────────
-build:go:
-  extends: .build-base
-  image: golang:${GO_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:go
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        go build -v -o bin/ ./...
-      fi
-  artifacts:
-    paths:
-      - bin/
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - go.mod
-      when: always
-    - when: never
-
-# ── Python / pip ──────────────────────────────────────────────────────────────
-build:python:pip:
-  extends: .build-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:python:pip
-      artifacts: true
-      optional: true
-  script:
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      elif [ -f "setup.py" ]; then
-        python setup.py build
-      elif [ -f "pyproject.toml" ]; then
-        pip install build && python -m build
-      else
-        echo "No build step required for pip project"
-      fi
-  rules:
-    - exists:
-        - requirements.txt
-      when: always
-    - when: never
-
-# ── Python / poetry ───────────────────────────────────────────────────────────
-build:python:poetry:
-  extends: .build-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:python:poetry
-      artifacts: true
-      optional: true
-  before_script:
-    - pip install poetry
-    - poetry config virtualenvs.in-project true
-  script:
-    - poetry install --no-interaction
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        poetry build || echo "No build step required"
-      fi
-  rules:
-    - exists:
-        - pyproject.toml
-        - poetry.lock
-      when: always
-    - when: never
-
-# ── Python / pipenv ───────────────────────────────────────────────────────────
-build:python:pipenv:
-  extends: .build-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: build
-  needs:
-    - job: detect:python:pipenv
-      artifacts: true
-      optional: true
-  before_script:
-    - pip install pipenv
-  script:
-    - pipenv install --deploy
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        echo "No build step required for pipenv project"
-      fi
-  rules:
-    - exists:
-        - Pipfile
-      when: always
-    - when: never
-
-# ── PHP / Composer ────────────────────────────────────────────────────────────
-build:php:composer:
-  extends: .build-base
-  image: php:${PHP_VERSION}-cli-alpine
-  stage: build
-  needs:
-    - job: detect:php:composer
-      artifacts: true
-      optional: true
-  before_script:
-    - apk add --no-cache curl git unzip
-    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-  script:
-    - composer install --no-dev --optimize-autoloader --no-interaction
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        echo "No additional build step required for PHP project"
-      fi
-  artifacts:
-    paths:
-      - vendor/
-      - public/
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - composer.json
-      when: always
-    - when: never
-
-# ── Rust / Cargo ──────────────────────────────────────────────────────────────
-build:rust:cargo:
-  extends: .build-base
-  image: rust:${RUST_VERSION}
-  stage: build
-  needs:
-    - job: detect:rust:cargo
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        cargo build --release
-      fi
-  artifacts:
-    paths:
-      - target/release/
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - Cargo.toml
-      when: always
-    - when: never
-
-# ── .NET ──────────────────────────────────────────────────────────────────────
-build:dotnet:
-  extends: .build-base
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
-  stage: build
-  needs:
-    - job: detect:dotnet
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$BUILD_CMD" ]; then
-        eval "$BUILD_CMD"
-      else
-        dotnet restore
-        dotnet build --configuration Release --no-restore
-        dotnet publish --configuration Release --no-build --output ./publish
-      fi
-  artifacts:
-    paths:
-      - publish/
-    expire_in: 1 hour
-  rules:
-    - exists:
-        - "*.csproj"
-        - "*.sln"
-      when: always
-    - when: never
+    - when: on_success

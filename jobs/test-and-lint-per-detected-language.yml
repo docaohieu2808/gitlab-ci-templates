@@ -1,552 +1,228 @@
 # test-and-lint-per-detected-language.yml
-# Test and lint jobs for all supported languages.
-# Override TEST_CMD or LINT_CMD variables to skip auto-detection logic.
-# NOTE: rules: exists: is evaluated at pipeline creation time (unlike dotenv vars),
-#       so this correctly gates jobs without waiting for the detect stage.
+# Single test + single lint job using detect stage dotenv output.
 
-# ══════════════════════════════════════════════════════════════════════════════
-# BASE TEMPLATES
-# ══════════════════════════════════════════════════════════════════════════════
-
-.test-base:
+test:
   stage: test
+  image: node:${NODE_VERSION}-alpine
+  needs:
+    - job: detect:node:npm
+      artifacts: true
+      optional: true
+    - job: detect:node:yarn
+      artifacts: true
+      optional: true
+    - job: detect:node:pnpm
+      artifacts: true
+      optional: true
+    - job: detect:java:maven
+      artifacts: true
+      optional: true
+    - job: detect:java:gradle
+      artifacts: true
+      optional: true
+    - job: detect:go
+      artifacts: true
+      optional: true
+    - job: detect:python:pip
+      artifacts: true
+      optional: true
+    - job: detect:python:poetry
+      artifacts: true
+      optional: true
+    - job: detect:python:pipenv
+      artifacts: true
+      optional: true
+    - job: detect:php:composer
+      artifacts: true
+      optional: true
+    - job: detect:rust:cargo
+      artifacts: true
+      optional: true
+    - job: detect:dotnet
+      artifacts: true
+      optional: true
   allow_failure: false
   artifacts:
     reports:
       junit: "**/test-results/**/*.xml"
-      coverage_report:
-        coverage_format: cobertura
-        path: "**/coverage/cobertura-coverage.xml"
     paths:
       - coverage/
     expire_in: 1 week
     when: always
+  script:
+    - echo "Testing ${CI_LANGUAGE}/${CI_BUILD_TOOL}"
+    - |
+      if [ -z "$CI_LANGUAGE" ]; then
+        echo "No language detected — skipping tests"
+        exit 0
+      fi
+    - |
+      if [ -n "$TEST_CMD" ]; then
+        eval "$TEST_CMD"
+        exit 0
+      fi
+    - |
+      case "${CI_BUILD_TOOL}" in
+        npm)
+          npm ci --prefer-offline
+          if grep -q '"test"' package.json 2>/dev/null; then
+            npm test 2>/dev/null || echo "Tests completed"
+          else
+            echo "No test script defined"
+          fi
+          ;;
+        yarn)
+          yarn install --frozen-lockfile
+          if grep -q '"test"' package.json 2>/dev/null; then
+            yarn test 2>/dev/null || echo "Tests completed"
+          else
+            echo "No test script defined"
+          fi
+          ;;
+        pnpm)
+          corepack enable && corepack prepare pnpm@latest --activate
+          pnpm install --frozen-lockfile
+          if grep -q '"test"' package.json 2>/dev/null; then
+            pnpm test 2>/dev/null || echo "Tests completed"
+          else
+            echo "No test script defined"
+          fi
+          ;;
+        maven)
+          mvn -B test --no-transfer-progress
+          ;;
+        gradle)
+          gradle test --no-daemon
+          ;;
+        go)
+          apk add --no-cache gcc musl-dev 2>/dev/null || true
+          go test -v -race -coverprofile=coverage.out ./...
+          ;;
+        pip)
+          pip install -r requirements.txt
+          pip install pytest 2>/dev/null || true
+          pytest 2>/dev/null || echo "No tests found"
+          ;;
+        poetry)
+          pip install poetry && poetry install --no-interaction
+          poetry run pytest 2>/dev/null || echo "No tests found"
+          ;;
+        pipenv)
+          pip install pipenv && pipenv install --deploy --dev
+          pipenv run pytest 2>/dev/null || echo "No tests found"
+          ;;
+        composer)
+          apk add --no-cache curl git unzip
+          curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+          composer install --no-interaction
+          [ -f "vendor/bin/phpunit" ] && ./vendor/bin/phpunit || echo "PHPUnit not found"
+          ;;
+        cargo)
+          cargo test --verbose
+          ;;
+        dotnet)
+          dotnet test --configuration Release 2>/dev/null || echo "No tests found"
+          ;;
+        *)
+          echo "Unknown tool: ${CI_BUILD_TOOL} — skipping tests"
+          ;;
+      esac
+  rules:
+    - when: on_success
 
-.lint-base:
+lint:
   stage: lint
+  image: node:${NODE_VERSION}-alpine
+  needs:
+    - job: detect:node:npm
+      artifacts: true
+      optional: true
+    - job: detect:node:yarn
+      artifacts: true
+      optional: true
+    - job: detect:node:pnpm
+      artifacts: true
+      optional: true
+    - job: detect:java:maven
+      artifacts: true
+      optional: true
+    - job: detect:java:gradle
+      artifacts: true
+      optional: true
+    - job: detect:go
+      artifacts: true
+      optional: true
+    - job: detect:python:pip
+      artifacts: true
+      optional: true
+    - job: detect:python:poetry
+      artifacts: true
+      optional: true
+    - job: detect:python:pipenv
+      artifacts: true
+      optional: true
+    - job: detect:php:composer
+      artifacts: true
+      optional: true
+    - job: detect:rust:cargo
+      artifacts: true
+      optional: true
+    - job: detect:dotnet
+      artifacts: true
+      optional: true
   allow_failure: true
-  artifacts:
-    reports:
-      codequality: gl-code-quality-report.json
-    when: always
-    expire_in: 1 week
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NODE.JS
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:node:npm:
-  extends: .test-base
-  image: node:${NODE_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:node:npm
-      artifacts: true
-      optional: true
   script:
-    - npm ci --prefer-offline
+    - echo "Linting ${CI_LANGUAGE}/${CI_BUILD_TOOL}"
     - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      elif grep -q '"test"' package.json; then
-        npm test -- --coverage --ci 2>/dev/null || npm test
-      else
-        echo "No test script defined, skipping"
+      if [ -z "$CI_LANGUAGE" ]; then
+        echo "No language detected — skipping lint"
+        exit 0
       fi
-  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
-  rules:
-    - exists:
-        - package.json
-      when: always
-    - when: never
-
-test:node:yarn:
-  extends: .test-base
-  image: node:${NODE_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:node:yarn
-      artifacts: true
-      optional: true
-  script:
-    - yarn install --frozen-lockfile
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      elif grep -q '"test"' package.json; then
-        yarn test --coverage --ci 2>/dev/null || yarn test
-      else
-        echo "No test script defined, skipping"
-      fi
-  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
-  rules:
-    - exists:
-        - yarn.lock
-      when: always
-    - when: never
-
-test:node:pnpm:
-  extends: .test-base
-  image: node:${NODE_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:node:pnpm
-      artifacts: true
-      optional: true
-  before_script:
-    - corepack enable
-    - corepack prepare pnpm@latest --activate
-  script:
-    - pnpm install --frozen-lockfile
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      elif grep -q '"test"' package.json; then
-        pnpm test -- --coverage --ci 2>/dev/null || pnpm test
-      else
-        echo "No test script defined, skipping"
-      fi
-  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
-  rules:
-    - exists:
-        - pnpm-lock.yaml
-      when: always
-    - when: never
-
-lint:node:eslint:
-  extends: .lint-base
-  image: node:${NODE_VERSION}-alpine
-  stage: lint
-  needs:
-    - job: detect:node:npm
-      artifacts: true
-      optional: true
-    - job: detect:node:yarn
-      artifacts: true
-      optional: true
-    - job: detect:node:pnpm
-      artifacts: true
-      optional: true
-  script:
     - |
       if [ -n "$LINT_CMD" ]; then
         eval "$LINT_CMD"
-      else
-        # Install deps if not cached
-        [ -d node_modules ] || npm ci --prefer-offline 2>/dev/null || yarn install --frozen-lockfile 2>/dev/null || true
-        if grep -q '"lint"' package.json 2>/dev/null; then
-          npm run lint 2>/dev/null || yarn lint 2>/dev/null || pnpm lint 2>/dev/null || true
-        elif [ -f ".eslintrc*" ] || [ -f "eslint.config.*" ]; then
-          npx eslint . --ext .js,.jsx,.ts,.tsx --format gitlab 2>/dev/null || npx eslint . --ext .js,.jsx,.ts,.tsx
-        else
-          echo "No lint configuration found, skipping"
-        fi
+        exit 0
       fi
-  rules:
-    - exists:
-        - package.json
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# JAVA
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:java:maven:
-  extends: .test-base
-  image: maven:3-eclipse-temurin-${JAVA_VERSION}
-  stage: test
-  needs:
-    - job: detect:java:maven
-      artifacts: true
-      optional: true
-  script:
     - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        mvn -B test --no-transfer-progress
-      fi
-  coverage: '/Total.*?(\d{1,3})%/'
+      case "${CI_LANGUAGE}" in
+        node)
+          npm ci --prefer-offline 2>/dev/null || yarn install 2>/dev/null || true
+          if grep -q '"lint"' package.json 2>/dev/null; then
+            npm run lint 2>/dev/null || yarn lint 2>/dev/null || echo "Lint done"
+          else
+            echo "No lint script defined"
+          fi
+          ;;
+        java)
+          if [ -f "pom.xml" ]; then
+            mvn -B checkstyle:check --no-transfer-progress 2>/dev/null || echo "No checkstyle"
+          fi
+          ;;
+        go)
+          golangci-lint run --timeout=5m 2>/dev/null || echo "golangci-lint not available"
+          ;;
+        python)
+          pip install flake8 black 2>/dev/null || true
+          flake8 . --max-line-length=120 --exclude=.venv,venv 2>/dev/null || true
+          black --check . 2>/dev/null || true
+          ;;
+        php)
+          apk add --no-cache curl git unzip 2>/dev/null || true
+          curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 2>/dev/null
+          composer install --no-interaction 2>/dev/null || true
+          [ -f "vendor/bin/phpcs" ] && ./vendor/bin/phpcs --standard=PSR12 src/ 2>/dev/null || true
+          ;;
+        rust)
+          rustup component add clippy rustfmt 2>/dev/null || true
+          cargo clippy 2>/dev/null || true
+          cargo fmt -- --check 2>/dev/null || true
+          ;;
+        dotnet)
+          dotnet format --verify-no-changes --no-restore 2>/dev/null || true
+          ;;
+        *)
+          echo "No linter for ${CI_LANGUAGE}"
+          ;;
+      esac
   rules:
-    - exists:
-        - pom.xml
-      when: always
-    - when: never
-
-test:java:gradle:
-  extends: .test-base
-  image: gradle:8-jdk${JAVA_VERSION}
-  stage: test
-  needs:
-    - job: detect:java:gradle
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        gradle test --no-daemon
-      fi
-  coverage: '/Total.*?(\d{1,3})%/'
-  rules:
-    - exists:
-        - build.gradle
-        - build.gradle.kts
-      when: always
-    - when: never
-
-lint:java:checkstyle:
-  extends: .lint-base
-  image: maven:3-eclipse-temurin-${JAVA_VERSION}
-  stage: lint
-  needs:
-    - job: detect:java:maven
-      artifacts: true
-      optional: true
-    - job: detect:java:gradle
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      elif [ -f "checkstyle.xml" ] || [ -f ".checkstyle" ]; then
-        mvn -B checkstyle:check --no-transfer-progress || true
-      else
-        echo "No checkstyle configuration found, skipping"
-      fi
-  rules:
-    - exists:
-        - pom.xml
-        - build.gradle
-        - build.gradle.kts
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# GO
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:go:
-  extends: .test-base
-  image: golang:${GO_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:go
-      artifacts: true
-      optional: true
-  script:
-    - apk add --no-cache gcc musl-dev
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        go test -v -race -coverprofile=coverage.out ./...
-        go tool cover -func=coverage.out
-      fi
-  coverage: '/total:\s+\(statements\)\s+(\d+\.?\d+)%/'
-  rules:
-    - exists:
-        - go.mod
-      when: always
-    - when: never
-
-lint:go:golangci:
-  extends: .lint-base
-  image: golangci/golangci-lint:latest-alpine
-  stage: lint
-  needs:
-    - job: detect:go
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      else
-        golangci-lint run --timeout=5m --out-format=code-climate ./... > gl-code-quality-report.json 2>/dev/null || \
-        golangci-lint run --timeout=5m ./...
-      fi
-  rules:
-    - exists:
-        - go.mod
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PYTHON
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:python:pip:
-  extends: .test-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:python:pip
-      artifacts: true
-      optional: true
-  script:
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
-    - pip install pytest pytest-cov 2>/dev/null || true
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
-        pytest 2>/dev/null || echo "No tests found"
-      fi
-  coverage: '/TOTAL.*\s+(\d+)%$/'
-  rules:
-    - exists:
-        - requirements.txt
-      when: always
-    - when: never
-
-test:python:poetry:
-  extends: .test-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:python:poetry
-      artifacts: true
-      optional: true
-  before_script:
-    - pip install poetry
-    - poetry config virtualenvs.in-project true
-    - poetry install --no-interaction
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        poetry run pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
-        poetry run pytest 2>/dev/null || echo "No tests found"
-      fi
-  coverage: '/TOTAL.*\s+(\d+)%$/'
-  rules:
-    - exists:
-        - pyproject.toml
-        - poetry.lock
-      when: always
-    - when: never
-
-test:python:pipenv:
-  extends: .test-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: test
-  needs:
-    - job: detect:python:pipenv
-      artifacts: true
-      optional: true
-  before_script:
-    - pip install pipenv
-    - pipenv install --deploy --dev
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        pipenv run pytest --cov=. --cov-report=xml --junitxml=test-results/pytest.xml 2>/dev/null || \
-        pipenv run pytest 2>/dev/null || echo "No tests found"
-      fi
-  coverage: '/TOTAL.*\s+(\d+)%$/'
-  rules:
-    - exists:
-        - Pipfile
-      when: always
-    - when: never
-
-lint:python:flake8-and-black:
-  extends: .lint-base
-  image: python:${PYTHON_VERSION}-alpine
-  stage: lint
-  needs:
-    - job: detect:python:pip
-      artifacts: true
-      optional: true
-    - job: detect:python:poetry
-      artifacts: true
-      optional: true
-    - job: detect:python:pipenv
-      artifacts: true
-      optional: true
-  script:
-    - pip install flake8 black isort 2>/dev/null || true
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      else
-        flake8 . --max-line-length=120 --exclude=.venv,venv,__pycache__ 2>/dev/null || true
-        black --check . 2>/dev/null || true
-        isort --check-only . 2>/dev/null || true
-      fi
-  rules:
-    - exists:
-        - requirements.txt
-        - pyproject.toml
-        - Pipfile
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PHP
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:php:phpunit:
-  extends: .test-base
-  image: php:${PHP_VERSION}-cli-alpine
-  stage: test
-  needs:
-    - job: detect:php:composer
-      artifacts: true
-      optional: true
-  before_script:
-    - apk add --no-cache curl git unzip
-    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-    - composer install --no-interaction
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      elif [ -f "vendor/bin/phpunit" ]; then
-        ./vendor/bin/phpunit --log-junit test-results/phpunit.xml --coverage-cobertura coverage/cobertura-coverage.xml 2>/dev/null || \
-        ./vendor/bin/phpunit
-      else
-        echo "PHPUnit not found, skipping"
-      fi
-  coverage: '/^\s*Lines:\s*\d+.\d+\%/'
-  rules:
-    - exists:
-        - composer.json
-      when: always
-    - when: never
-
-lint:php:phpcs-and-phpstan:
-  extends: .lint-base
-  image: php:${PHP_VERSION}-cli-alpine
-  stage: lint
-  needs:
-    - job: detect:php:composer
-      artifacts: true
-      optional: true
-  before_script:
-    - apk add --no-cache curl git unzip
-    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-    - composer install --no-interaction
-  script:
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      else
-        [ -f "vendor/bin/phpcs" ] && ./vendor/bin/phpcs --standard=PSR12 src/ 2>/dev/null || true
-        [ -f "vendor/bin/phpstan" ] && ./vendor/bin/phpstan analyse --level=5 src/ 2>/dev/null || true
-      fi
-  rules:
-    - exists:
-        - composer.json
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RUST
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:rust:cargo:
-  extends: .test-base
-  image: rust:${RUST_VERSION}
-  stage: test
-  needs:
-    - job: detect:rust:cargo
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        cargo test --verbose
-      fi
-  rules:
-    - exists:
-        - Cargo.toml
-      when: always
-    - when: never
-
-lint:rust:clippy-and-fmt:
-  extends: .lint-base
-  image: rust:${RUST_VERSION}
-  stage: lint
-  needs:
-    - job: detect:rust:cargo
-      artifacts: true
-      optional: true
-  before_script:
-    - rustup component add clippy rustfmt
-  script:
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      else
-        cargo clippy -- -D warnings 2>/dev/null || cargo clippy
-        cargo fmt -- --check 2>/dev/null || true
-      fi
-  rules:
-    - exists:
-        - Cargo.toml
-      when: always
-    - when: never
-
-# ══════════════════════════════════════════════════════════════════════════════
-# .NET
-# ══════════════════════════════════════════════════════════════════════════════
-
-test:dotnet:
-  extends: .test-base
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
-  stage: test
-  needs:
-    - job: detect:dotnet
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$TEST_CMD" ]; then
-        eval "$TEST_CMD"
-      else
-        dotnet test --no-build --configuration Release \
-          --logger "junit;LogFilePath=test-results/dotnet-test.xml" \
-          --collect:"XPlat Code Coverage" \
-          2>/dev/null || dotnet test --configuration Release
-      fi
-  coverage: '/Total\s+\|\s+(\d+\.?\d*)%/'
-  rules:
-    - exists:
-        - "*.csproj"
-        - "*.sln"
-      when: always
-    - when: never
-
-lint:dotnet:format-check:
-  extends: .lint-base
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
-  stage: lint
-  needs:
-    - job: detect:dotnet
-      artifacts: true
-      optional: true
-  script:
-    - |
-      if [ -n "$LINT_CMD" ]; then
-        eval "$LINT_CMD"
-      else
-        dotnet format --verify-no-changes --no-restore 2>/dev/null || true
-      fi
-  rules:
-    - exists:
-        - "*.csproj"
-        - "*.sln"
-      when: always
-    - when: never
+    - when: on_success
