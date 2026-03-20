@@ -1,0 +1,41 @@
+# Consumer usage example — GitLab CI/CD Catalog component
+#
+# Include this component from the CI/CD Catalog in your project's .gitlab-ci.yml:
+#
+#   include:
+#     - component: git.docaohieu.com/cicd-auto-pipeline/gitlab-ci-templates/auto-detect-build-test-deploy@1.0
+#       inputs:
+#         deploy_target: docker-compose
+#
+# All inputs are optional — sensible defaults are provided.
+# Full input reference: gitlab-cicd-catalog-component-auto-detect-build-test-deploy.yml
+
+include:
+  - component: git.docaohieu.com/cicd-auto-pipeline/gitlab-ci-templates/auto-detect-build-test-deploy@1.0
+    inputs:
+      # Language (omit to auto-detect)
+      # language: node
+
+      # Build
+      build_enabled: true
+      # build_args: ""
+
+      # Test
+      test_enabled: true
+      skip_tests: false
+      lint_enabled: true
+
+      # Docker
+      docker_build_enabled: true
+      # docker_image: registry.example.com/my-org/my-app
+      # docker_tag: $CI_COMMIT_SHORT_SHA
+      dockerfile_path: Dockerfile
+
+      # Deploy
+      deploy_enabled: true
+      deploy_target: docker-compose      # ssh-build|docker-compose|s3-cloudfront|rsync|k8s|helm|vercel|netlify|fly-io|railway
+      deploy_host: $DEPLOY_HOST          # set in CI/CD variables
+      deploy_user: deploy
+      deploy_path: /opt/app
+      deploy_port: "22"
+      deploy_branch: main                # branch that triggers deploy job
