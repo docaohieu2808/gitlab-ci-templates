@@ -1574,3 +1574,17 @@ deploy:custom-command-escape-hatch:
     - if: '$DEPLOY_TARGET == "custom"'
       when: always
     - when: never
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEVEL 4 — PARENT-CHILD PIPELINE TRIGGER
+# ══════════════════════════════════════════════════════════════════════════════
+
+deploy-trigger:
+  stage: deploy
+  trigger:
+    include:
+      - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+        file: '/child-pipelines/deploy-pipeline.yml'
+    strategy: depend
+  rules:
+    - if: '$DEPLOY_TARGET && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
