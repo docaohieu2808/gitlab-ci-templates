@@ -1,0 +1,511 @@
+# GitLab CI/CD Catalog Component — auto-detect-build-test-deploy
+# Component path: gitlab.com/cicd-auto-pipeline/gitlab-ci-templates/auto-detect-build-test-deploy
+# Catalog: https://git.example.com/cicd-auto-pipeline/gitlab-ci-templates
+#
+# Usage:
+#   include:
+#     - component: git.example.com/cicd-auto-pipeline/gitlab-ci-templates/auto-detect-build-test-deploy@1.0
+#       inputs:
+#         deploy_target: docker-compose
+
+spec:
+  inputs:
+    # ── Language / Runtime ──────────────────────────────────────────────────
+    language:
+      description: "Force language (node|java|go|python|php|rust|dotnet). Default: auto-detect."
+      default: ""
+      type: string
+
+    node_version:
+      description: "Node.js version override (e.g. '20'). Ignored for non-Node projects."
+      default: ""
+      type: string
+
+    java_version:
+      description: "Java version (e.g. '21'). Ignored for non-Java projects."
+      default: "21"
+      type: string
+
+    go_version:
+      description: "Go version (e.g. '1.22'). Ignored for non-Go projects."
+      default: ""
+      type: string
+
+    python_version:
+      description: "Python version (e.g. '3.12'). Ignored for non-Python projects."
+      default: "3.12"
+      type: string
+
+    # ── Build ───────────────────────────────────────────────────────────────
+    build_enabled:
+      description: "Enable the build job."
+      default: true
+      type: boolean
+
+    build_args:
+      description: "Extra build arguments passed to the build step."
+      default: ""
+      type: string
+
+    # ── Test / Lint ─────────────────────────────────────────────────────────
+    test_enabled:
+      description: "Enable the test job."
+      default: true
+      type: boolean
+
+    skip_tests:
+      description: "Skip running unit tests (lint still runs)."
+      default: false
+      type: boolean
+
+    lint_enabled:
+      description: "Enable the lint job."
+      default: true
+      type: boolean
+
+    # ── Docker ──────────────────────────────────────────────────────────────
+    docker_build_enabled:
+      description: "Enable Docker image build & push."
+      default: false
+      type: boolean
+
+    docker_image:
+      description: "Docker image name. Default: $CI_REGISTRY_IMAGE."
+      default: ""
+      type: string
+
+    docker_tag:
+      description: "Docker image tag. Default: $CI_COMMIT_SHORT_SHA."
+      default: ""
+      type: string
+
+    dockerfile_path:
+      description: "Path to Dockerfile."
+      default: "Dockerfile"
+      type: string
+
+    docker_build_args:
+      description: "Extra --build-arg flags for docker build."
+      default: ""
+      type: string
+
+    # ── Deploy ──────────────────────────────────────────────────────────────
+    deploy_enabled:
+      description: "Enable the deploy job."
+      default: false
+      type: boolean
+
+    deploy_target:
+      description: |
+        Deploy target:
+          ssh-build | docker-compose | s3-cloudfront | rsync |
+          k8s | helm | vercel | netlify | fly-io | railway
+      default: ""
+      type: string
+
+    deploy_host:
+      description: "SSH hostname/IP (used by ssh-build, docker-compose, rsync)."
+      default: ""
+      type: string
+
+    deploy_user:
+      description: "SSH user."
+      default: "deploy"
+      type: string
+
+    deploy_path:
+      description: "Remote deploy path."
+      default: "/opt/app"
+      type: string
+
+    deploy_port:
+      description: "SSH port."
+      default: "22"
+      type: string
+
+    deploy_branch:
+      description: "Branch that triggers deployment."
+      default: "main"
+      type: string
+
+    # ── Cache ───────────────────────────────────────────────────────────────
+    cache_enabled:
+      description: "Enable job-level caching."
+      default: true
+      type: boolean
+
+    # ── Runner ──────────────────────────────────────────────────────────────
+    runner_tags:
+      description: "GitLab runner tags (comma-separated)."
+      default: ""
+      type: string
+
+    image_override:
+      description: "Override the Docker image used for all jobs."
+      default: ""
+      type: string
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGES
+# ══════════════════════════════════════════════════════════════════════════════
+
+stages:
+  - detect
+  - build
+  - test
+  - docker
+  - deploy
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HIDDEN JOB — shared config
+# ══════════════════════════════════════════════════════════════════════════════
+
+.auto-pipeline-defaults:
+  image: $[[ inputs.image_override | default("alpine:3.19") ]]
+  tags: $[[ inputs.runner_tags | split(",") | compact ]]
+  before_script:
+    - apk add --no-cache bash curl git 2>/dev/null || true
+  cache:
+    - !reference [.auto-pipeline-cache, cache]
+
+.auto-pipeline-cache:
+  cache:
+    key:
+      files:
+        - package-lock.json
+        - yarn.lock
+        - pnpm-lock.yaml
+        - go.sum
+        - requirements.txt
+        - Pipfile.lock
+        - composer.lock
+        - Cargo.lock
+        - pom.xml
+        - build.gradle
+    paths:
+      - node_modules/
+      - .npm/
+      - .cache/go-build/
+      - vendor/
+      - .gradle/
+      - ~/.m2/repository/
+    policy: pull-push
+    when: $[[ inputs.cache_enabled | ternary("always","never") ]]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DETECT
+# ══════════════════════════════════════════════════════════════════════════════
+
+auto-detect:
+  stage: detect
+  image: alpine:3.19
+  script:
+    - |
+      set -e
+      FORCED="${[[ inputs.language ]]}"
+      if [ -n "$FORCED" ]; then
+        LANG="$FORCED"
+      elif [ -f "package.json" ]; then
+        LANG="node"
+      elif [ -f "pom.xml" ] || [ -f "build.gradle" ] || [ -f "gradlew" ]; then
+        LANG="java"
+      elif [ -f "go.mod" ]; then
+        LANG="go"
+      elif [ -f "requirements.txt" ] || [ -f "Pipfile" ] || [ -f "pyproject.toml" ]; then
+        LANG="python"
+      elif [ -f "composer.json" ]; then
+        LANG="php"
+      elif [ -f "Cargo.toml" ]; then
+        LANG="rust"
+      elif [ -f "*.csproj" ] || [ -f "*.sln" ]; then
+        LANG="dotnet"
+      else
+        LANG="unknown"
+      fi
+
+      HAS_DOCKERFILE="false"
+      [ -f "$[[ inputs.dockerfile_path ]]" ] && HAS_DOCKERFILE="true"
+
+      echo "DETECTED_LANGUAGE=$LANG" >> detect.env
+      echo "HAS_DOCKERFILE=$HAS_DOCKERFILE" >> detect.env
+      echo "[auto-detect] language=$LANG has_dockerfile=$HAS_DOCKERFILE"
+  artifacts:
+    reports:
+      dotenv: detect.env
+    expire_in: 1 hour
+  rules:
+    - when: always
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BUILD
+# ══════════════════════════════════════════════════════════════════════════════
+
+auto-build:
+  stage: build
+  needs: [auto-detect]
+  rules:
+    - if: $[[ inputs.build_enabled ]]
+      when: always
+    - when: never
+  script:
+    - |
+      set -e
+      LANG="${DETECTED_LANGUAGE:-unknown}"
+      EXTRA="${[[ inputs.build_args ]]}"
+      echo "[auto-build] language=$LANG"
+      case "$LANG" in
+        node)
+          NODE_VER="${[[ inputs.node_version ]]}"
+          [ -n "$NODE_VER" ] && apk add --no-cache nodejs~="$NODE_VER" npm 2>/dev/null || apk add --no-cache nodejs npm
+          [ -f "package-lock.json" ] && npm ci $EXTRA || npm install $EXTRA
+          npm run build $EXTRA 2>/dev/null || true
+          ;;
+        java)
+          apk add --no-cache openjdk$[[ inputs.java_version ]]-jdk 2>/dev/null || true
+          if [ -f "gradlew" ]; then chmod +x gradlew && ./gradlew build -x test $EXTRA
+          elif [ -f "mvnw" ]; then chmod +x mvnw && ./mvnw package -DskipTests $EXTRA
+          elif [ -f "pom.xml" ]; then mvn package -DskipTests $EXTRA
+          else gradle build -x test $EXTRA; fi
+          ;;
+        go)
+          GO_VER="${[[ inputs.go_version ]]}"
+          [ -n "$GO_VER" ] && apk add --no-cache go~="$GO_VER" 2>/dev/null || apk add --no-cache go
+          go build ./... $EXTRA
+          ;;
+        python)
+          apk add --no-cache python3~=$[[ inputs.python_version ]] py3-pip 2>/dev/null || apk add --no-cache python3 py3-pip
+          [ -f "requirements.txt" ] && pip install -r requirements.txt $EXTRA
+          [ -f "Pipfile" ] && pip install pipenv && pipenv install $EXTRA
+          [ -f "pyproject.toml" ] && pip install . $EXTRA
+          ;;
+        php)
+          apk add --no-cache php83 php83-phar composer 2>/dev/null || true
+          [ -f "composer.json" ] && composer install --no-dev $EXTRA
+          ;;
+        rust)
+          apk add --no-cache cargo rust 2>/dev/null || true
+          cargo build --release $EXTRA
+          ;;
+        dotnet)
+          apk add --no-cache dotnet-sdk 2>/dev/null || true
+          dotnet build $EXTRA
+          ;;
+        *)
+          echo "[auto-build] unknown language — skipping"
+          ;;
+      esac
+  cache:
+    - !reference [.auto-pipeline-cache, cache]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEST
+# ══════════════════════════════════════════════════════════════════════════════
+
+auto-test:
+  stage: test
+  needs: [auto-build]
+  rules:
+    - if: $[[ inputs.test_enabled ]]
+      when: always
+    - when: never
+  script:
+    - |
+      set -e
+      if [ "$[[ inputs.skip_tests ]]" = "true" ]; then
+        echo "[auto-test] skip_tests=true — skipping"
+        exit 0
+      fi
+      LANG="${DETECTED_LANGUAGE:-unknown}"
+      echo "[auto-test] language=$LANG"
+      case "$LANG" in
+        node)
+          npm test -- --passWithNoTests 2>/dev/null || npm test 2>/dev/null || true
+          ;;
+        java)
+          if [ -f "gradlew" ]; then ./gradlew test
+          elif [ -f "mvnw" ]; then ./mvnw test
+          else mvn test; fi
+          ;;
+        go)  go test ./... ;;
+        python)
+          pip install pytest 2>/dev/null || true
+          pytest --tb=short 2>/dev/null || python -m pytest --tb=short 2>/dev/null || true
+          ;;
+        php)
+          [ -f "vendor/bin/phpunit" ] && vendor/bin/phpunit || true
+          ;;
+        rust) cargo test ;;
+        dotnet) dotnet test ;;
+        *) echo "[auto-test] unknown language — skipping" ;;
+      esac
+  cache:
+    - !reference [.auto-pipeline-cache, cache]
+  artifacts:
+    reports:
+      junit: "**/test-results/**/*.xml"
+    expire_in: 7 days
+    when: always
+
+auto-lint:
+  stage: test
+  needs: [auto-build]
+  rules:
+    - if: $[[ inputs.lint_enabled ]]
+      when: always
+    - when: never
+  script:
+    - |
+      set -e
+      LANG="${DETECTED_LANGUAGE:-unknown}"
+      echo "[auto-lint] language=$LANG"
+      case "$LANG" in
+        node)
+          npx eslint . --ext .js,.ts,.jsx,.tsx 2>/dev/null || true
+          npx prettier --check . 2>/dev/null || true
+          ;;
+        go)
+          go install golang.org/x/lint/golint@latest 2>/dev/null || true
+          golint ./... 2>/dev/null || go vet ./...
+          ;;
+        python)
+          pip install flake8 2>/dev/null || true
+          flake8 . --max-line-length=120 2>/dev/null || true
+          ;;
+        php)
+          [ -f "vendor/bin/phpcs" ] && vendor/bin/phpcs --standard=PSR12 . || true
+          ;;
+        rust) cargo clippy -- -D warnings 2>/dev/null || cargo check ;;
+        *) echo "[auto-lint] no linter for $LANG — skipping" ;;
+      esac
+  cache:
+    - !reference [.auto-pipeline-cache, cache]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCKER BUILD & PUSH
+# ══════════════════════════════════════════════════════════════════════════════
+
+auto-docker-build:
+  stage: docker
+  needs: [auto-test]
+  image: docker:26
+  services:
+    - docker:26-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    _IMAGE: $[[ inputs.docker_image | default("$CI_REGISTRY_IMAGE") ]]
+    _TAG:   $[[ inputs.docker_tag   | default("$CI_COMMIT_SHORT_SHA") ]]
+  rules:
+    - if: $[[ inputs.docker_build_enabled ]]
+      when: always
+    - when: never
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - |
+      set -e
+      EXTRA_ARGS="${[[ inputs.docker_build_args ]]}"
+      docker build \
+        -f "$[[ inputs.dockerfile_path ]]" \
+        -t "${_IMAGE}:${_TAG}" \
+        -t "${_IMAGE}:latest" \
+        $EXTRA_ARGS \
+        .
+      docker push "${_IMAGE}:${_TAG}"
+      docker push "${_IMAGE}:latest"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPLOY
+# ══════════════════════════════════════════════════════════════════════════════
+
+auto-deploy:
+  stage: deploy
+  needs: [auto-docker-build]
+  rules:
+    - if: '$[[ inputs.deploy_enabled ]] && $CI_COMMIT_BRANCH == "$[[ inputs.deploy_branch ]]"'
+      when: manual
+      allow_failure: false
+    - when: never
+  environment:
+    name: $[[ inputs.deploy_target ]]
+    url: "https://$[[ inputs.deploy_host ]]"
+  script:
+    - |
+      set -e
+      TARGET="${[[ inputs.deploy_target ]]}"
+      HOST="${[[ inputs.deploy_host ]]}"
+      USER="${[[ inputs.deploy_user ]]}"
+      PATH_="${[[ inputs.deploy_path ]]}"
+      PORT="${[[ inputs.deploy_port ]]}"
+      IMAGE="${[[ inputs.docker_image | default("$CI_REGISTRY_IMAGE") ]]}"
+      TAG="${[[ inputs.docker_tag   | default("$CI_COMMIT_SHORT_SHA") ]]}"
+
+      echo "[auto-deploy] target=$TARGET"
+
+      _ssh() {
+        ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key -p "$PORT" "$USER@$HOST" "$@"
+      }
+      _setup_key() {
+        echo "$DEPLOY_KEY" | tr -d '\r' > /tmp/deploy_key
+        chmod 600 /tmp/deploy_key
+      }
+
+      case "$TARGET" in
+        ssh-build)
+          _setup_key
+          _ssh "cd $PATH_ && git pull && bash deploy.sh"
+          ;;
+        docker-compose)
+          _setup_key
+          _ssh "cd $PATH_ && docker pull $IMAGE:$TAG && \
+            IMAGE=$IMAGE TAG=$TAG docker-compose up -d --remove-orphans"
+          ;;
+        rsync)
+          _setup_key
+          apk add --no-cache rsync openssh-client
+          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key -p $PORT" \
+            ./ "$USER@$HOST:$PATH_/"
+          ;;
+        k8s)
+          apk add --no-cache curl
+          curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/
+          echo "$KUBECONFIG_CONTENT" | base64 -d > /tmp/kubeconfig
+          kubectl --kubeconfig=/tmp/kubeconfig set image deployment/"$K8S_DEPLOYMENT_NAME" \
+            app="$IMAGE:$TAG" --namespace="${K8S_NAMESPACE:-default}"
+          ;;
+        helm)
+          apk add --no-cache curl
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sh
+          echo "$KUBECONFIG_CONTENT" | base64 -d > /tmp/kubeconfig
+          helm --kubeconfig=/tmp/kubeconfig upgrade --install "$HELM_RELEASE_NAME" "$HELM_CHART_PATH" \
+            --set image.repository="$IMAGE" \
+            --set image.tag="$TAG" \
+            --namespace "${K8S_NAMESPACE:-default}" --create-namespace
+          ;;
+        vercel)
+          npm install -g vercel
+          vercel --token "$VERCEL_TOKEN" --prod --yes
+          ;;
+        netlify)
+          npm install -g netlify-cli
+          netlify deploy --dir="${NETLIFY_PUBLISH_DIR:-dist}" --prod --auth "$NETLIFY_AUTH_TOKEN" \
+            --site "$NETLIFY_SITE_ID"
+          ;;
+        s3-cloudfront)
+          apk add --no-cache aws-cli
+          aws s3 sync "${S3_SOURCE_DIR:-dist}" "s3://$S3_BUCKET" --delete
+          [ -n "$CLOUDFRONT_DISTRIBUTION_ID" ] && \
+            aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" --paths "/*"
+          ;;
+        fly-io)
+          curl -L https://fly.io/install.sh | sh
+          fly deploy --app "$FLY_APP_NAME" --access-token "$FLY_API_TOKEN"
+          ;;
+        railway)
+          npm install -g @railway/cli
+          railway up --service "$RAILWAY_SERVICE" --token "$RAILWAY_TOKEN"
+          ;;
+        *)
+          echo "[auto-deploy] unknown target '$TARGET' — skipping"
+          ;;
+      esac
