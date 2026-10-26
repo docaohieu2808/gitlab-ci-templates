@@ -1,0 +1,9 @@
+{
+  "name": "fixture-node-vulnerable-dependency",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pins lodash 4.17.15 (known HIGH CVEs, fixed in 4.17.21) so the Trivy dependency job has something to find.",
+  "dependencies": {
+    "lodash": "4.17.15"
+  }
+}

@@ -149,6 +149,39 @@ jobs:
       - name: Generate and run the monorepo pipeline
         run: tests/run-monorepo-fixture-with-gitlab-ci-local.sh "${{ matrix.fixture }}" "${{ matrix.expect }}"
 
+  security-jobs:
+    name: ${{ matrix.job }} on ${{ matrix.fixture }} ${{ matrix.inject }} (expect ${{ matrix.expect }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { job: "secret-detection:gitleaks", fixture: node-good, inject: "", expect: pass }
+          - { job: "secret-detection:gitleaks", fixture: node-good, inject: "--inject-secret", expect: fail }
+          - { job: "dependency-scan:trivy", fixture: node-good, inject: "", expect: pass }
+          - { job: "dependency-scan:trivy", fixture: node-vulnerable-dependency, inject: "", expect: fail }
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tests/package-lock.json
+
+      - name: Install gitlab-ci-local
+        run: |
+          npm ci --prefix tests
+          echo "$GITHUB_WORKSPACE/tests/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Run the security job on the fixture (a secret or a vulnerable dependency must turn it red)
+        run: tests/run-security-job-with-gitlab-ci-local.sh "${{ matrix.fixture }}" "${{ matrix.job }}" "${{ matrix.expect }}" ${{ matrix.inject }}
+
   child-deploy-pipeline:
     name: child deploy pipeline input validation
     runs-on: ubuntu-latest
