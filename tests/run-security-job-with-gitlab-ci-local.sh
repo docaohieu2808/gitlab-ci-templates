@@ -41,7 +41,7 @@ YAML
 
 if [ "$inject" = "--inject-secret" ]; then
   # AKIA + 16 characters of the base32 alphabet is the shape Gitleaks' aws-access-token rule matches.
-  key="AKIA$(openssl rand -base32 24 | tr -d '=\n' | head -c 16)"
+  key="AKIA$(python3 -I -c 'import secrets; print("".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(16)))')"
   mkdir -p "$work/config"
   printf 'AWS_ACCESS_KEY_ID=%s\n' "$key" > "$work/config/deploy.env"
   unset key

@@ -157,10 +157,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { job: "secret-detection:gitleaks", fixture: node-good, inject: "", expect: pass }
-          - { job: "secret-detection:gitleaks", fixture: node-good, inject: "--inject-secret", expect: fail }
-          - { job: "dependency-scan:trivy", fixture: node-good, inject: "", expect: pass }
-          - { job: "dependency-scan:trivy", fixture: node-vulnerable-dependency, inject: "", expect: fail }
+          - job: "secret-detection:gitleaks"
+            fixture: node-good
+            inject: ""
+            expect: pass
+          - job: "secret-detection:gitleaks"
+            fixture: node-good
+            inject: "--inject-secret"
+            expect: fail
+          - job: "dependency-scan:trivy"
+            fixture: node-good
+            inject: ""
+            expect: pass
+          - job: "dependency-scan:trivy"
+            fixture: node-vulnerable-dependency
+            inject: ""
+            expect: fail
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
