@@ -1,0 +1,71 @@
+# Source-level security scans (SAST, secrets, dependencies). They run in the
+# security-scan stage, after lint/build/test/docker-build. Each job exits non-zero
+# when it finds something; none of them swallows its exit code. Set
+# allow_failure: true on a job in your own .gitlab-ci.yml if you want it advisory.
+# The container image scan lives in docker-build-and-push.yml because it needs
+# the image that job pushed.
+#
+# Switches: SECURITY_SCAN_ENABLED (all), SAST_ENABLED, SECRET_DETECTION_ENABLED,
+# DEPENDENCY_SCAN_ENABLED, each "true" or "false".
+#
+# Note: only Semgrep writes a report in a format GitLab understands (--gitlab-sast).
+# The other tools print their findings in the job log. For the merge request
+# security widget use GitLab's own templates instead, e.g.
+#   include: [{template: Jobs/Secret-Detection.gitlab-ci.yml}]
+
+sast:semgrep:
+  stage: security-scan
+  image:
+    name: semgrep/semgrep:1.182.0
+    entrypoint: [""]
+  script:
+    - semgrep scan --config p/default --metrics=off --error --gitlab-sast --output gl-sast-report.json .
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    expire_in: 1 week
+    when: always
+  rules:
+    - if: '$SECURITY_SCAN_ENABLED == "false" || $SAST_ENABLED == "false"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
+
+secret-detection:gitleaks:
+  stage: security-scan
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.1
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks git --no-banner --redact --report-format json --report-path gitleaks-report.json .
+  artifacts:
+    paths:
+      - gitleaks-report.json
+    expire_in: 1 week
+    when: always
+  rules:
+    - if: '$SECURITY_SCAN_ENABLED == "false" || $SECRET_DETECTION_ENABLED == "false"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'
+
+# Trivy reads package-lock.json, yarn.lock, pnpm-lock.yaml, requirements.txt,
+# poetry.lock, go.mod, pom.xml, gradle lockfiles, composer.lock, Cargo.lock and
+# *.csproj/packages.lock.json, so one job covers every language in this pipeline.
+dependency-scan:trivy:
+  stage: security-scan
+  image:
+    name: aquasec/trivy:0.76.1
+    entrypoint: [""]
+  variables:
+    TRIVY_CACHE_DIR: "$CI_PROJECT_DIR/.trivycache"
+  cache:
+    key: trivy-db
+    paths:
+      - .trivycache/
+  script:
+    - trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --no-progress .
+  rules:
+    - if: '$SECURITY_SCAN_ENABLED == "false" || $DEPENDENCY_SCAN_ENABLED == "false"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG'

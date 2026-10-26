@@ -1,0 +1,26 @@
+# Parent side of the parent-child example. The parent runs lint/build/test/scan from
+# auto-pipeline.yml, then triggers child-pipelines/deploy-pipeline.yml.
+#
+# The child is the only deploy path: DEPLOY_TARGET is set on the trigger job only
+# (not globally), so the in-pipeline deploy jobs of auto-pipeline.yml stay inactive
+# and nothing deploys twice.
+
+include:
+  - project: 'your-group/gitlab-ci-templates'
+    ref: 1.0.0
+    file: '/auto-pipeline.yml'
+
+deploy:
+  stage: deploy
+  variables:
+    DEPLOY_TARGET: k8s                  # forwarded to the child
+    DEPLOY_IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    K8S_DEPLOYMENT: my-app
+  trigger:
+    include:
+      - project: 'your-group/gitlab-ci-templates'
+        ref: 1.0.0
+        file: '/child-pipelines/deploy-pipeline.yml'
+    strategy: depend
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

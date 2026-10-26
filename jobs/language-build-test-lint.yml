@@ -1,0 +1,273 @@
+# Per-language lint / build / test jobs. A job exists only when its manifest file
+# exists (rules:exists), and each language runs in its own image, so a Go repo is
+# never built inside a node image. A failing test fails the job: there is no
+# `|| echo` anywhere. Only "the project defines no test/lint step" is a skip, and
+# it is printed.
+#
+# To change a command, redefine the job in your .gitlab-ci.yml, for example:
+#   test:node:
+#     script: [npm run test:ci]
+# Needs: jobs/stages.yml and jobs/variables.yml (already inside auto-pipeline.yml).
+
+.build-artifacts:
+  artifacts:
+    paths:
+      - dist/
+      - build/
+      - target/
+      - bin/
+    expire_in: 1 day
+    when: on_success
+
+# ── Node.js (npm, pnpm and yarn through corepack; corepack ships with Node 24) ─
+
+.node:
+  image: node:${NODE_VERSION}-alpine
+  rules:
+    - exists:
+        - package.json
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-npm"
+    paths:
+      - .npm/
+  before_script:
+    - |
+      export npm_config_cache="$CI_PROJECT_DIR/.npm"
+      if [ -f pnpm-lock.yaml ]; then
+        corepack enable
+        pnpm install --frozen-lockfile
+        PM=pnpm
+      elif [ -f yarn.lock ]; then
+        corepack enable
+        if [ -f .yarnrc.yml ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi
+        PM=yarn
+      elif [ -f package-lock.json ]; then
+        npm ci
+        PM=npm
+      else
+        npm install
+        PM=npm
+      fi
+
+lint:node:
+  extends: .node
+  stage: lint
+  script:
+    - |
+      if grep -Eq '"lint"[[:space:]]*:' package.json; then "$PM" run lint; else echo "package.json has no lint script - nothing to lint"; fi
+
+build:node:
+  extends: [.node, .build-artifacts]
+  stage: build
+  script:
+    - |
+      if grep -Eq '"build"[[:space:]]*:' package.json; then "$PM" run build; else echo "package.json has no build script - nothing to build"; fi
+
+test:node:
+  extends: .node
+  stage: test
+  script:
+    - |
+      if grep -Eq '"test"[[:space:]]*:' package.json; then "$PM" test; else echo "package.json has no test script - nothing to test"; fi
+
+# ── Python (requirements.txt or a PEP 517 pyproject.toml) ──────────────────────
+
+.python:
+  image: python:${PYTHON_VERSION}-alpine
+  rules:
+    - exists:
+        - requirements.txt
+        - pyproject.toml
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-pip"
+    paths:
+      - .cache/pip/
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  before_script:
+    - |
+      if [ -f requirements.txt ]; then
+        pip install -r requirements.txt
+      else
+        pip install .
+      fi
+
+lint:python:
+  extends: .python
+  stage: lint
+  script:
+    - pip install ruff
+    - ruff check .
+
+build:python:
+  extends: .python
+  stage: build
+  script:
+    - python -m compileall -q -x '/(\.venv|\.cache)/' .
+
+test:python:
+  extends: .python
+  stage: test
+  script:
+    - pip install pytest
+    - |
+      rc=0
+      pytest -q || rc=$?
+      if [ "$rc" -eq 5 ]; then echo "pytest collected no tests - nothing to test"; exit 0; fi
+      exit "$rc"
+
+# ── Java: Maven and Gradle ─────────────────────────────────────────────────────
+
+.maven:
+  image: maven:3-eclipse-temurin-${JAVA_VERSION}
+  rules:
+    - exists:
+        - pom.xml
+
+build:java-maven:
+  extends: [.maven, .build-artifacts]
+  stage: build
+  script:
+    - mvn -B -ntp package -DskipTests
+
+test:java-maven:
+  extends: .maven
+  stage: test
+  script:
+    - mvn -B -ntp test
+
+.gradle:
+  image: gradle:9-jdk${JAVA_VERSION}
+  rules:
+    - exists:
+        - build.gradle
+        - build.gradle.kts
+
+build:java-gradle:
+  extends: [.gradle, .build-artifacts]
+  stage: build
+  script:
+    - gradle build -x test --no-daemon
+
+test:java-gradle:
+  extends: .gradle
+  stage: test
+  script:
+    - gradle test --no-daemon
+
+# ── Go ─────────────────────────────────────────────────────────────────────────
+
+.go:
+  image: golang:${GO_VERSION}-alpine
+  rules:
+    - exists:
+        - go.mod
+
+lint:go:
+  extends: .go
+  stage: lint
+  script:
+    - go vet ./...
+
+build:go:
+  extends: [.go, .build-artifacts]
+  stage: build
+  script:
+    - go build -v -o bin/ ./...
+
+test:go:
+  extends: .go
+  stage: test
+  script:
+    - go test ./...
+
+# ── PHP (Composer) ─────────────────────────────────────────────────────────────
+
+.php:
+  image:
+    name: ${PHP_IMAGE}
+    entrypoint: [""]
+  rules:
+    - exists:
+        - composer.json
+  before_script:
+    - composer install --no-interaction --prefer-dist
+
+lint:php:
+  extends: .php
+  stage: lint
+  script:
+    - composer validate --strict
+
+build:php:
+  extends: .php
+  stage: build
+  script:
+    - composer dump-autoload --optimize
+
+test:php:
+  extends: .php
+  stage: test
+  script:
+    - |
+      if [ -x vendor/bin/phpunit ]; then vendor/bin/phpunit; else echo "phpunit is not installed - nothing to test"; fi
+
+# ── Rust (Cargo) ───────────────────────────────────────────────────────────────
+
+.rust:
+  image:
+    name: ${RUST_IMAGE}
+    entrypoint: [""]
+  rules:
+    - exists:
+        - Cargo.toml
+  before_script:
+    - apk add --no-cache musl-dev
+
+lint:rust:
+  extends: .rust
+  stage: lint
+  script:
+    - rustup component add clippy rustfmt
+    - cargo fmt --check
+    - cargo clippy --all-targets -- -D warnings
+
+build:rust:
+  extends: [.rust, .build-artifacts]
+  stage: build
+  script:
+    - cargo build --release
+
+test:rust:
+  extends: .rust
+  stage: test
+  script:
+    - cargo test
+
+# ── .NET ───────────────────────────────────────────────────────────────────────
+
+.dotnet:
+  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}
+  rules:
+    - exists:
+        - "**/*.csproj"
+        - "**/*.sln"
+        - "**/*.slnx"
+
+lint:dotnet:
+  extends: .dotnet
+  stage: lint
+  script:
+    - dotnet format --verify-no-changes
+
+build:dotnet:
+  extends: .dotnet
+  stage: build
+  script:
+    - dotnet build --configuration Release
+
+test:dotnet:
+  extends: .dotnet
+  stage: test
+  script:
+    - dotnet test --configuration Release

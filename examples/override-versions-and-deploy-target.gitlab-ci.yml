@@ -1,0 +1,21 @@
+# Override versions, switch scans, pick a deploy target, and replace one job's command.
+include:
+  - project: 'your-group/gitlab-ci-templates'
+    ref: 1.0.0
+    file: '/auto-pipeline.yml'
+
+variables:
+  NODE_VERSION: "22"
+  CONTAINER_SCAN_ENABLED: "false"
+  DOCKER_BUILD_ARGS: "--target prod"
+
+  # Deploy to a docker compose host over SSH, from the default branch only.
+  DEPLOY_TARGET: docker-compose
+  DEPLOY_HOST: app.example.com
+  DEPLOY_PATH: /opt/app
+  # DEPLOY_SSH_PRIVATE_KEY and DEPLOY_KNOWN_HOSTS: masked + protected CI/CD variables.
+
+# Replace the test command of one job; everything else (image, cache, rules) is kept.
+test:node:
+  script:
+    - npm run test:ci

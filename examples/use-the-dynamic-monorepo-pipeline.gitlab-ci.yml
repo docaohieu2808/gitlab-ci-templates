@@ -1,0 +1,5 @@
+# Monorepo: one top-level directory per service; a child pipeline is generated per run.
+include:
+  - project: 'your-group/gitlab-ci-templates'
+    ref: 1.0.0
+    file: '/dynamic/generate-pipeline-from-monorepo-service-detection.yml'

@@ -1,0 +1,9 @@
+# Stage order shared by every fragment in jobs/. Include this file first when you
+# pick fragments one by one; auto-pipeline.yml already contains it.
+stages:
+  - lint
+  - build
+  - test
+  - docker-build
+  - security-scan
+  - deploy

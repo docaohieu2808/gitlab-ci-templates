@@ -1,0 +1,9 @@
+# Consume the CI/CD component. Replace the host and path with the GitLab instance and
+# project that publishes this repository, and pin a released semantic version.
+include:
+  - component: $CI_SERVER_FQDN/your-group/gitlab-ci-templates/auto-detect-build-test-deploy@1.0.0
+    inputs:
+      node_version: "22"
+      container_scan_enabled: "false"
+      deploy_target: k8s
+      k8s_deployment: my-app

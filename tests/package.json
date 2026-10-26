@@ -1,0 +1,8 @@
+{
+  "name": "gitlab-ci-templates-tests",
+  "private": true,
+  "description": "Pins the gitlab-ci-local version used to run the pipelines against fixture projects",
+  "devDependencies": {
+    "gitlab-ci-local": "4.77.0"
+  }
+}

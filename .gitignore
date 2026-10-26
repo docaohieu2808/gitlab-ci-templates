@@ -1,4 +1,7 @@
-# plans, docs, and claude kit dirs — local tooling only, not part of the template
+# plans, docs, and claude kit dirs - local tooling only, not part of the template
 plans/
 docs/
 .claude/
+# gitlab-ci-local working files
+.gitlab-ci-local/
+node_modules/

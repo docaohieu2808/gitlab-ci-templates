@@ -1,152 +1,108 @@
-# child-pipelines/deploy-pipeline.yml — Child deploy pipeline (Level 4: Parent-Child)
-# Triggered by deploy-trigger job in auto-pipeline.yml (parent).
-# Receives all CI/CD variables from parent via the trigger bridge.
+# Child deploy pipeline (parent-child pipelines).
 #
-# Usage (from parent):
-#   trigger:
-#     include:
-#       - project: 'cicd-auto-pipeline/gitlab-ci-templates'
-#         file: '/child-pipelines/deploy-pipeline.yml'
-#     strategy: depend
+# A parent pipeline builds and tests, then triggers this file with `trigger:include`
+# and `strategy: depend`, so the parent shows the child's result. CI/CD variables of
+# the parent are forwarded to the child automatically. See
+# examples/parent-pipeline-triggers-deploy-child.gitlab-ci.yml for the parent side.
+#
+# DEPLOY_TARGET picks the deploy job: docker-compose | k8s | helm. validate-inputs
+# fails the child early, with a readable message, when something required is missing.
 
 stages:
   - validate
   - deploy
   - verify
 
-# ── Variables (inherited from parent; defaults kept for standalone use) ──────
 variables:
   DEPLOY_TARGET: ""
   DEPLOY_HOST: ""
   DEPLOY_USER: "deploy"
-  DEPLOY_PATH: "/opt/app"
   DEPLOY_PORT: "22"
-  DEPLOY_KEY: ""
-  DOCKER_IMAGE: ""
-  DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
-  DOCKER_REGISTRY: "$CI_REGISTRY"
+  DEPLOY_PATH: "/opt/app"
+  DEPLOY_KNOWN_HOSTS: ""
+  DEPLOY_HEALTH_URL: ""
+  DEPLOY_IMAGE: ""              # full image reference to roll out, e.g. registry.example.com/app:1.2.3
   K8S_NAMESPACE: "default"
   K8S_DEPLOYMENT: ""
   K8S_CONTAINER: "app"
   HELM_RELEASE: ""
   HELM_CHART: "./helm"
   HELM_NAMESPACE: "default"
-  CHILD_DEPLOY_TIMEOUT: "600"
-
-# ── Hidden base ──────────────────────────────────────────────────────────────
-.child-deploy-base:
-  image: alpine:3.19
-  before_script:
-    - echo "==> Child pipeline started"
-    - echo "    DEPLOY_TARGET  = $DEPLOY_TARGET"
-    - echo "    CI_ENVIRONMENT = $CI_ENVIRONMENT_NAME"
-    - echo "    Triggered by   = $CI_PIPELINE_SOURCE"
-
-# ── Stage: validate ──────────────────────────────────────────────────────────
+  DEPLOY_TIMEOUT: "600"
 
 child:validate-inputs:
-  extends: .child-deploy-base
   stage: validate
+  image: alpine:3.24
   script:
     - |
-      if [ -z "$DEPLOY_TARGET" ]; then
-        echo "ERROR: DEPLOY_TARGET is required in child pipeline"
-        exit 1
-      fi
-      echo "==> Validated: DEPLOY_TARGET=$DEPLOY_TARGET"
-  rules:
-    - when: always
+      case "$DEPLOY_TARGET" in
+        docker-compose) need="DEPLOY_HOST DEPLOY_KNOWN_HOSTS" ;;
+        k8s)            need="DEPLOY_IMAGE K8S_DEPLOYMENT" ;;
+        helm)           need="DEPLOY_IMAGE HELM_RELEASE" ;;
+        *) echo "DEPLOY_TARGET must be docker-compose, k8s or helm (got '$DEPLOY_TARGET')" >&2; exit 1 ;;
+      esac
+      for name in $need; do
+        eval "value=\${$name:-}"
+        if [ -z "$value" ]; then echo "$name is required for DEPLOY_TARGET=$DEPLOY_TARGET" >&2; exit 1; fi
+      done
+      echo "Inputs OK for $DEPLOY_TARGET"
 
-# ── Stage: deploy ────────────────────────────────────────────────────────────
-
-child:deploy-ssh:
-  extends: .child-deploy-base
+child:deploy-docker-compose:
   stage: deploy
+  image: alpine:3.24
+  resource_group: production
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - eval "$(ssh-agent -s)"
+    - printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
   script:
     - |
-      apk add --no-cache openssh-client rsync
-      eval $(ssh-agent -s)
-      echo "$DEPLOY_KEY" | tr -d '\r' | ssh-add -
-      mkdir -p ~/.ssh && chmod 700 ~/.ssh
-      ssh-keyscan -p "${DEPLOY_PORT}" "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
-      echo "==> Deploying to SSH target: $DEPLOY_HOST:$DEPLOY_PATH"
-      rsync -avz --delete ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
-      ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "
-        cd $DEPLOY_PATH
-        [ -f docker-compose.yml ] && docker compose pull && docker compose up -d --remove-orphans || true
-        [ -f restart.sh ] && sh restart.sh || true
-      "
+      ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+        "cd '$DEPLOY_PATH' && docker compose pull && docker compose up -d --remove-orphans"
   rules:
-    - if: '$DEPLOY_TARGET == "ssh" || $DEPLOY_TARGET == "ssh-build" || $DEPLOY_TARGET == "docker-compose"'
-      when: always
-    - when: never
+    - if: '$DEPLOY_TARGET == "docker-compose"'
 
 child:deploy-k8s:
-  extends: .child-deploy-base
   stage: deploy
-  image: bitnami/kubectl:latest
+  image:
+    name: alpine/k8s:1.37.1
+    entrypoint: [""]
+  resource_group: production
   script:
-    - |
-      echo "==> Deploying to Kubernetes"
-      echo "    Namespace  : $K8S_NAMESPACE"
-      echo "    Deployment : $K8S_DEPLOYMENT"
-      echo "    Image      : ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}"
-      kubectl set image deployment/"$K8S_DEPLOYMENT" \
-        "$K8S_CONTAINER=${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}" \
-        -n "$K8S_NAMESPACE"
-      kubectl rollout status deployment/"$K8S_DEPLOYMENT" \
-        -n "$K8S_NAMESPACE" \
-        --timeout="${CHILD_DEPLOY_TIMEOUT}s"
+    - kubectl set image "deployment/$K8S_DEPLOYMENT" "$K8S_CONTAINER=$DEPLOY_IMAGE" -n "$K8S_NAMESPACE"
+    - kubectl rollout status "deployment/$K8S_DEPLOYMENT" -n "$K8S_NAMESPACE" --timeout="${DEPLOY_TIMEOUT}s"
   rules:
     - if: '$DEPLOY_TARGET == "k8s"'
-      when: always
-    - when: never
 
 child:deploy-helm:
-  extends: .child-deploy-base
   stage: deploy
-  image: alpine/helm:3.14.0
+  image:
+    name: alpine/helm:4.3.1
+    entrypoint: [""]
+  resource_group: production
   script:
     - |
-      echo "==> Deploying via Helm"
-      echo "    Release   : $HELM_RELEASE"
-      echo "    Chart     : $HELM_CHART"
-      echo "    Namespace : $HELM_NAMESPACE"
       helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
-        --namespace "$HELM_NAMESPACE" \
-        --create-namespace \
-        --set image.tag="$DOCKER_TAG" \
-        --set image.repository="${DOCKER_REGISTRY}/${DOCKER_IMAGE}" \
-        --atomic \
-        --timeout "${CHILD_DEPLOY_TIMEOUT}s"
+        --namespace "$HELM_NAMESPACE" --create-namespace \
+        --set "image.repository=${DEPLOY_IMAGE%:*}" --set "image.tag=${DEPLOY_IMAGE##*:}" \
+        --atomic --timeout "${DEPLOY_TIMEOUT}s"
   rules:
     - if: '$DEPLOY_TARGET == "helm"'
-      when: always
-    - when: never
 
-# ── Stage: verify ────────────────────────────────────────────────────────────
-
-child:verify-deployment:
-  extends: .child-deploy-base
+child:verify-health:
   stage: verify
+  image: alpine:3.24
   script:
+    - apk add --no-cache curl
     - |
-      echo "==> Post-deploy verification"
-      if [ -n "$DEPLOY_HEALTH_URL" ]; then
-        apk add --no-cache curl
-        for i in $(seq 1 10); do
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$DEPLOY_HEALTH_URL" || echo "000")
-          echo "    Attempt $i: HTTP $STATUS"
-          if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
-            echo "==> Health check passed"
-            exit 0
-          fi
-          sleep 10
-        done
-        echo "ERROR: Health check failed after 10 attempts"
-        exit 1
-      else
-        echo "==> No DEPLOY_HEALTH_URL set — skipping health check"
-      fi
+      attempt=1
+      until curl --fail --silent --show-error --output /dev/null "$DEPLOY_HEALTH_URL"; do
+        if [ "$attempt" -ge 10 ]; then echo "Health check failed after $attempt attempts" >&2; exit 1; fi
+        attempt=$((attempt + 1))
+        sleep 10
+      done
+      echo "Health check passed"
   rules:
-    - when: always
+    - if: '$DEPLOY_HEALTH_URL != ""'

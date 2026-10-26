@@ -1,0 +1,7 @@
+# Minimal usage: one include. Languages are detected from manifest files; no deploy
+# target is set, so the pipeline runs lint, build, test, image build (if a Dockerfile
+# exists) and security scans.
+include:
+  - project: 'your-group/gitlab-ci-templates'
+    ref: 1.0.0
+    file: '/auto-pipeline.yml'

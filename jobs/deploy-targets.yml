@@ -1,0 +1,94 @@
+# Deploy jobs, one per target, selected with DEPLOY_TARGET. This is the single
+# deploy path of the pipeline: a job runs only on the default branch, never on a
+# merge request or feature branch, and `resource_group` serialises deploys so two
+# pipelines cannot deploy at once. Targets: docker-compose, rsync, s3, k8s, helm.
+#
+# Secrets come from masked + protected CI/CD variables, never from this repo:
+#   SSH targets   DEPLOY_SSH_PRIVATE_KEY, DEPLOY_KNOWN_HOSTS (pinned host key, no ssh-keyscan at deploy time)
+#   s3            AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or an OIDC role through `id_tokens`
+#   k8s, helm     KUBECONFIG as a variable of type "File"
+#
+# Every image whose entrypoint is the tool itself overrides it with entrypoint: [""]
+# so the runner can start its own shell.
+
+.deploy:
+  stage: deploy
+  resource_group: production
+  environment:
+    name: production
+
+.ssh-deploy:
+  extends: .deploy
+  image: alpine:3.24
+  before_script:
+    - apk add --no-cache openssh-client rsync
+    - |
+      if [ -z "${DEPLOY_SSH_PRIVATE_KEY:-}" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ] || [ -z "$DEPLOY_HOST" ]; then
+        echo "Set DEPLOY_HOST, DEPLOY_KNOWN_HOSTS and DEPLOY_SSH_PRIVATE_KEY" >&2
+        exit 1
+      fi
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - eval "$(ssh-agent -s)"
+    - printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+
+deploy:docker-compose-over-ssh:
+  extends: .ssh-deploy
+  script:
+    - |
+      ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+        "cd '$DEPLOY_PATH' && export IMAGE_TAG='$CI_COMMIT_SHORT_SHA' && docker compose pull && docker compose up -d --remove-orphans"
+  rules:
+    - if: '$DEPLOY_TARGET == "docker-compose" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+deploy:rsync-over-ssh:
+  extends: .ssh-deploy
+  script:
+    - rsync -az -e "ssh -p $DEPLOY_PORT" "$DEPLOY_RSYNC_SOURCE" "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+  rules:
+    - if: '$DEPLOY_TARGET == "rsync" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+deploy:s3-sync:
+  extends: .deploy
+  image:
+    name: amazon/aws-cli:2.38.5
+    entrypoint: [""]
+  script:
+    - |
+      : "${S3_BUCKET:?set S3_BUCKET}"
+      aws s3 sync "$S3_SOURCE" "s3://$S3_BUCKET/" --delete
+      if [ -n "$CLOUDFRONT_DISTRIBUTION_ID" ]; then
+        aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" --paths "/*"
+      fi
+  rules:
+    - if: '$DEPLOY_TARGET == "s3" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+deploy:k8s-set-image:
+  extends: .deploy
+  image:
+    name: alpine/k8s:1.37.1
+    entrypoint: [""]
+  script:
+    - |
+      : "${K8S_DEPLOYMENT:?set K8S_DEPLOYMENT}"
+      IMAGE="${DOCKER_IMAGE:-$CI_REGISTRY_IMAGE}:$CI_COMMIT_SHORT_SHA"
+      kubectl set image "deployment/$K8S_DEPLOYMENT" "$K8S_CONTAINER=$IMAGE" -n "$K8S_NAMESPACE"
+      kubectl rollout status "deployment/$K8S_DEPLOYMENT" -n "$K8S_NAMESPACE" --timeout="${DEPLOY_TIMEOUT}s"
+  rules:
+    - if: '$DEPLOY_TARGET == "k8s" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+deploy:helm-upgrade-install:
+  extends: .deploy
+  image:
+    name: alpine/helm:4.3.1
+    entrypoint: [""]
+  script:
+    - |
+      : "${HELM_RELEASE:?set HELM_RELEASE}"
+      helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
+        --namespace "$HELM_NAMESPACE" --create-namespace \
+        --set "image.repository=${DOCKER_IMAGE:-$CI_REGISTRY_IMAGE}" \
+        --set "image.tag=$CI_COMMIT_SHORT_SHA" \
+        --atomic --timeout "${DEPLOY_TIMEOUT}s"
+  rules:
+    - if: '$DEPLOY_TARGET == "helm" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

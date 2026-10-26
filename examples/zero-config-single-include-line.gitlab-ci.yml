@@ -1,8 +1,0 @@
-# zero-config-single-include-line.gitlab-ci.yml
-# Minimal usage: one include line, everything else auto-detected.
-# Language, build tool, test runner, and linter are all inferred from project files.
-# No deploy target set — pipeline runs build + test + lint + security only.
-
-include:
-  - project: 'cicd-auto-pipeline/gitlab-ci-templates'
-    file: '/auto-pipeline.yml'

@@ -1,235 +1,161 @@
-# dynamic/generate-pipeline-from-monorepo-service-detection.yml — Level 5: Dynamic pipeline generation
-# Scans a monorepo at runtime, detects services by manifest files (package.json, pom.xml, go.mod,
-# requirements.txt, Cargo.toml, composer.json), generates a per-service CI YAML, then triggers it.
+# Dynamic child pipeline for a monorepo.
+#
+# Job 1 (generate-monorepo-pipeline) scans the top-level directories, recognises a
+# service by its manifest (package.json, pom.xml, go.mod, requirements.txt,
+# pyproject.toml, Cargo.toml, composer.json, *.csproj), decides which services
+# changed, and writes generated-pipeline.yml with one CI job per changed service
+# (plus a docker job when the service has a Dockerfile).
+# Job 2 (run-generated-pipeline) triggers that file as a child pipeline and mirrors
+# its result (strategy: depend), so a failing service test fails the parent too.
+#
+# Which services run:
+#   - default branch and tag pipelines: every service (the whole tree is verified)
+#   - other pipelines: only services with files changed since the previous commit or,
+#     in a merge request, since the diff base. If git cannot tell (first push, shallow
+#     history), every service runs and the job log says so.
 #
 # Usage:
 #   include:
-#     - project: 'cicd-auto-pipeline/gitlab-ci-templates'
+#     - project: 'your-group/gitlab-ci-templates'
+#       ref: 1.0.0
 #       file: '/dynamic/generate-pipeline-from-monorepo-service-detection.yml'
 
-stages:
-  - .pre
-  - build
-
 variables:
-  # Directories to exclude from service detection (space-separated)
   MONOREPO_EXCLUDE_DIRS: ".git node_modules vendor dist build target .cache"
-  # Base image for generate job
-  GENERATE_IMAGE: "alpine:3.19"
-  # Default Docker registry for generated build jobs
-  DOCKER_REGISTRY: "$CI_REGISTRY"
-  DOCKER_TAG: "$CI_COMMIT_SHORT_SHA"
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.14"
+  GO_VERSION: "1.27"
+  JAVA_VERSION: "25"
+  PHP_IMAGE: "composer:2"
+  RUST_IMAGE: "rust:1-alpine"
+  DOTNET_VERSION: "10.0"
+  GIT_DEPTH: "100"
 
-# ── Stage: .pre — detect services and emit generated-pipeline.yml ────────────
-
-generate-pipeline:
+generate-monorepo-pipeline:
   stage: .pre
-  image: "${GENERATE_IMAGE}"
+  image: alpine:3.24
+  before_script:
+    - apk add --no-cache git
   script:
     - |
-      #!/bin/sh
-      set -e
+      set -eu
+      out=generated-pipeline.yml
 
-      OUTPUT="generated-pipeline.yml"
-      EXCLUDE="${MONOREPO_EXCLUDE_DIRS}"
+      is_excluded() { for ex in $MONOREPO_EXCLUDE_DIRS; do [ "$1" = "$ex" ] && return 0; done; return 1; }
 
-      echo "==> Scanning monorepo for services..."
-      echo "    Exclude dirs: $EXCLUDE"
-
-      # ── Helper: check if dir is excluded ────────────────────────────────────
-      is_excluded() {
-        DIR="$1"
-        for EX in $EXCLUDE; do
-          [ "$DIR" = "$EX" ] && return 0
-        done
-        return 1
-      }
-
-      # ── Detect language from manifest ────────────────────────────────────────
       detect_language() {
-        DIR="$1"
-        [ -f "$DIR/package.json" ]      && echo "node"   && return
-        [ -f "$DIR/pom.xml" ]           && echo "java"   && return
-        [ -f "$DIR/build.gradle" ]      && echo "java"   && return
-        [ -f "$DIR/go.mod" ]            && echo "go"     && return
-        [ -f "$DIR/requirements.txt" ]  && echo "python" && return
-        [ -f "$DIR/pyproject.toml" ]    && echo "python" && return
-        [ -f "$DIR/Cargo.toml" ]        && echo "rust"   && return
-        [ -f "$DIR/composer.json" ]     && echo "php"    && return
-        [ -f "$DIR/*.csproj" ]          && echo "dotnet" && return
-        echo "unknown"
-      }
-
-      # ── Detect build image per language ─────────────────────────────────────
-      build_image() {
-        case "$1" in
-          node)   echo "node:20-alpine" ;;
-          java)   echo "maven:3.9-eclipse-temurin-21-alpine" ;;
-          go)     echo "golang:1.22-alpine" ;;
-          python) echo "python:3.12-alpine" ;;
-          rust)   echo "rust:1.77-alpine" ;;
-          php)    echo "composer:2.7" ;;
-          *)      echo "alpine:3.19" ;;
-        esac
-      }
-
-      # ── Detect build command per language ────────────────────────────────────
-      build_cmd() {
-        case "$1" in
-          node)   echo "npm ci --prefer-offline && npm run build" ;;
-          java)   echo "mvn package -DskipTests -q" ;;
-          go)     echo "go build -o app ./..." ;;
-          python) echo "pip install -r requirements.txt -q" ;;
-          rust)   echo "cargo build --release" ;;
-          php)    echo "composer install --no-dev --optimize-autoloader -q" ;;
-          *)      echo "echo 'No build command for unknown language'" ;;
-        esac
-      }
-
-      # ── Detect test command per language ─────────────────────────────────────
-      test_cmd() {
-        case "$1" in
-          node)   echo "npm test -- --passWithNoTests" ;;
-          java)   echo "mvn test -q" ;;
-          go)     echo "go test ./... -v" ;;
-          python) echo "python -m pytest --tb=short || true" ;;
-          rust)   echo "cargo test" ;;
-          php)    echo "vendor/bin/phpunit || true" ;;
-          *)      echo "echo 'No test command'" ;;
-        esac
-      }
-
-      # ── Write pipeline header ────────────────────────────────────────────────
-      cat > "$OUTPUT" << 'YAML_HEADER'
-      # AUTO-GENERATED by generate-pipeline — DO NOT EDIT MANUALLY
-      # Generated at: GENERATED_AT_PLACEHOLDER
-
-      stages:
-        - build
-        - test
-        - docker-build
-
-      YAML_HEADER
-
-      # Replace placeholder with actual timestamp
-      TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-      sed -i "s/GENERATED_AT_PLACEHOLDER/$TIMESTAMP/" "$OUTPUT"
-
-      SERVICES_FOUND=0
-
-      # ── Scan top-level directories ───────────────────────────────────────────
-      for dir in */; do
-        # Strip trailing slash
-        SERVICE="${dir%/}"
-
-        # Skip excluded and non-directories
-        [ ! -d "$SERVICE" ] && continue
-        is_excluded "$SERVICE" && continue
-
-        LANG=$(detect_language "$SERVICE")
-        [ "$LANG" = "unknown" ] && continue
-
-        SERVICES_FOUND=$((SERVICES_FOUND + 1))
-        IMG=$(build_image "$LANG")
-        BUILD=$(build_cmd "$LANG")
-        TEST=$(test_cmd "$LANG")
-        SAFE_NAME=$(echo "$SERVICE" | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]')
-
-        echo "    Detected service: $SERVICE (language=$LANG)"
-
-        # ── Emit build job ─────────────────────────────────────────────────────
-        cat >> "$OUTPUT" << YAML_JOB
-
-      build:${SAFE_NAME}:
-        stage: build
-        image: ${IMG}
-        script:
-          - cd ${SERVICE}
-          - ${BUILD}
-        artifacts:
-          paths:
-            - ${SERVICE}/dist/
-            - ${SERVICE}/target/
-            - ${SERVICE}/build/
-            - ${SERVICE}/app
-          expire_in: 1 hour
-          when: always
-        rules:
-          - changes:
-              - ${SERVICE}/**/*
-          - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
-
-      test:${SAFE_NAME}:
-        stage: test
-        image: ${IMG}
-        needs: ["build:${SAFE_NAME}"]
-        script:
-          - cd ${SERVICE}
-          - ${TEST}
-        rules:
-          - changes:
-              - ${SERVICE}/**/*
-          - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
-
-      YAML_JOB
-
-        # Emit docker-build job only if Dockerfile present
-        if [ -f "$SERVICE/Dockerfile" ]; then
-          cat >> "$OUTPUT" << YAML_DOCKER
-
-      docker-build:${SAFE_NAME}:
-        stage: docker-build
-        image: docker:25-cli
-        services:
-          - docker:25-dind
-        needs: ["test:${SAFE_NAME}"]
-        variables:
-          IMAGE_NAME: "\${DOCKER_REGISTRY}/${SAFE_NAME}:\${DOCKER_TAG}"
-        script:
-          - docker login -u "\$CI_REGISTRY_USER" -p "\$CI_REGISTRY_PASSWORD" "\$CI_REGISTRY"
-          - docker build -t "\$IMAGE_NAME" ${SERVICE}/
-          - docker push "\$IMAGE_NAME"
-        rules:
-          - if: '\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'
-            changes:
-              - ${SERVICE}/**/*
-
-      YAML_DOCKER
+        d="$1"
+        if [ -f "$d/package.json" ]; then echo node
+        elif [ -f "$d/pom.xml" ]; then echo java
+        elif [ -f "$d/go.mod" ]; then echo go
+        elif [ -f "$d/requirements.txt" ] || [ -f "$d/pyproject.toml" ]; then echo python
+        elif [ -f "$d/Cargo.toml" ]; then echo rust
+        elif [ -f "$d/composer.json" ]; then echo php
+        elif ls "$d"/*.csproj >/dev/null 2>&1; then echo dotnet
+        else echo unknown
         fi
+      }
 
-      done  # end for dir
-
-      echo "==> Services detected: $SERVICES_FOUND"
-
-      if [ "$SERVICES_FOUND" -eq 0 ]; then
-        echo "WARNING: No services detected — generating no-op pipeline"
-        cat >> "$OUTPUT" << 'YAML_NOOP'
-
-      no-services-detected:
-        stage: build
-        image: alpine:3.19
-        script:
-          - echo "No services with known manifests found in monorepo root"
-      YAML_NOOP
+      # Decide whether a service is part of this run.
+      run_all=false
+      base="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_COMMIT_BEFORE_SHA:-}}"
+      changed_files=""
+      if [ -n "${CI_COMMIT_TAG:-}" ] || [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH:-}" ]; then
+        run_all=true; echo "Default branch or tag pipeline: all services run"
+      elif [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+        run_all=true; echo "No usable diff base (first push): all services run"
+      elif changed_files="$(git diff --name-only "$base" "$CI_COMMIT_SHA" 2>/dev/null)"; then
+        echo "Changed files since $base:"; echo "$changed_files"
+      else
+        run_all=true; echo "git diff against $base failed (shallow history?): all services run"
       fi
+      service_changed() {
+        [ "$run_all" = true ] && return 0
+        printf '%s\n' "$changed_files" | grep -q "^$1/"
+      }
 
-      echo "==> Generated pipeline:"
-      cat "$OUTPUT"
+      printf 'stages:\n  - ci\n  - docker\n\n' > "$out"
+      found=0
+      selected=0
+      for entry in */; do
+        svc="${entry%/}"
+        [ -d "$svc" ] || continue
+        is_excluded "$svc" && continue
+        lang="$(detect_language "$svc")"
+        [ "$lang" = unknown ] && continue
+        found=$((found + 1))
+        service_changed "$svc" || { echo "skip $svc ($lang): no changes"; continue; }
+        selected=$((selected + 1))
+        echo "service $svc ($lang)"
 
+        entrypoint=false
+        case "$lang" in
+          node)
+            image="node:${NODE_VERSION}-alpine"
+            cmd='if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build --if-present && npm test --if-present' ;;
+          python)
+            image="python:${PYTHON_VERSION}-alpine"
+            cmd='if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install .; fi && pip install pytest && { rc=0; pytest -q || rc=$?; [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; }' ;;
+          go)
+            image="golang:${GO_VERSION}-alpine"
+            cmd='go vet ./... && go build ./... && go test ./...' ;;
+          java)
+            image="maven:3-eclipse-temurin-${JAVA_VERSION}"
+            cmd='mvn -B -ntp verify' ;;
+          rust)
+            image="$RUST_IMAGE"; entrypoint=true
+            cmd='apk add --no-cache musl-dev && cargo build && cargo test' ;;
+          php)
+            image="$PHP_IMAGE"; entrypoint=true
+            cmd='composer install --no-interaction && if [ -x vendor/bin/phpunit ]; then vendor/bin/phpunit; fi' ;;
+          dotnet)
+            image="mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION}"
+            cmd='dotnet build && dotnet test' ;;
+        esac
+
+        name="$(printf '%s' "$svc" | tr '[:upper:]_/' '[:lower:]--')"
+        {
+          printf 'ci:%s:\n  stage: ci\n' "$name"
+          if [ "$entrypoint" = true ]; then
+            printf '  image:\n    name: %s\n    entrypoint: [""]\n' "$image"
+          else
+            printf '  image: %s\n' "$image"
+          fi
+          printf '  script:\n    - cd %s\n    - |\n      %s\n\n' "$svc" "$cmd"
+        } >> "$out"
+
+        if [ -f "$svc/Dockerfile" ]; then
+          {
+            printf 'docker:%s:\n  stage: docker\n  image: docker:29-cli\n  services:\n    - docker:29-dind\n' "$name"
+            printf '  variables:\n    DOCKER_HOST: tcp://docker:2376\n    DOCKER_TLS_CERTDIR: "/certs"\n'
+            printf '    DOCKER_TLS_VERIFY: "1"\n    DOCKER_CERT_PATH: "/certs/client"\n'
+            printf '  needs: ["ci:%s"]\n' "$name"
+            printf '  script:\n'
+            printf '    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"\n'
+            printf '    - docker build -t "$CI_REGISTRY_IMAGE/%s:$CI_COMMIT_SHORT_SHA" %s\n' "$name" "$svc"
+            printf '    - docker push "$CI_REGISTRY_IMAGE/%s:$CI_COMMIT_SHORT_SHA"\n' "$name"
+            printf '  rules:\n    - if: '"'"'$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'"'"'\n\n'
+          } >> "$out"
+        fi
+      done
+
+      echo "Services found: $found, selected: $selected"
+      if [ "$selected" -eq 0 ]; then
+        printf 'nothing-to-run:\n  stage: ci\n  image: alpine:3.24\n  script:\n    - echo "No service changed in this pipeline (services found: %s)"\n' "$found" >> "$out"
+      fi
+      cat "$out"
   artifacts:
     paths:
       - generated-pipeline.yml
-    expire_in: 1 hour
+    expire_in: 1 day
 
-# ── Stage: build — trigger the generated pipeline ────────────────────────────
-
-run-dynamic:
+run-generated-pipeline:
   stage: build
+  needs:
+    - job: generate-monorepo-pipeline
+      artifacts: true
   trigger:
     include:
       - artifact: generated-pipeline.yml
-        job: generate-pipeline
+        job: generate-monorepo-pipeline
     strategy: depend
-  needs:
-    - job: generate-pipeline
-      artifacts: true

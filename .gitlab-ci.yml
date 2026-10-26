@@ -1,70 +1,45 @@
-# .gitlab-ci.yml — CI/CD Catalog release pipeline for gitlab-ci-templates repository
-# Publishes the auto-detect-build-test-deploy component to the GitLab CI/CD Catalog.
-# Triggered on version tags (e.g. v1.0, v1.2.3).
+# Pipeline of this repository itself, for a GitLab instance that hosts it.
+# It checks the files and, on a semantic-version tag (1.0.0, no leading "v"),
+# publishes a release, which is what puts the component in the CI/CD Catalog.
 #
-# GitLab 17+ CI/CD Catalog spec:
-#   https://docs.gitlab.com/ee/ci/components/#publish-a-new-release
+# The project must be marked as a catalog resource (Settings > General > Visibility >
+# CI/CD Catalog resource) and have a description. The same checks, plus runs of the
+# pipelines against fixture projects with gitlab-ci-local, run on GitHub Actions
+# (.github/workflows/ci.yml); see README.md.
 
 stages:
   - validate
   - release
 
-variables:
-  CATALOG_COMPONENT_ROOT: "templates/auto-detect-build-test-deploy"
-
-# ── Validate component YAML before release ──────────────────────────────────
-
-validate-catalog-component-yaml-syntax:
+validate:fragments-are-in-sync:
   stage: validate
-  image: alpine:3.19
-  before_script:
-    - apk add --no-cache python3 py3-pip
-    - pip install yamllint --quiet
+  image: python:3.14-alpine
   script:
-    - |
-      echo "[validate] Linting all YAML files under templates/"
-      yamllint -d "{extends: relaxed, rules: {line-length: {max: 160}}}" \
-        templates/auto-detect-build-test-deploy/gitlab-cicd-catalog-component-auto-detect-build-test-deploy.yml
-      echo "[validate] YAML OK"
+    - python3 scripts/build-pipelines-from-fragments.py --check
   rules:
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+/'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "merge_request_event"'
 
-# ── Publish to CI/CD Catalog ─────────────────────────────────────────────────
-# Requires:
-#   - Project marked as a catalog resource in Settings > CI/CD > Catalog
-#   - Tag format: v<major>.<minor>[.<patch>]  e.g. v1.0  or  v1.2.3
-#
-# The `release-cli` job uses the built-in GitLab release mechanism.
-# GitLab automatically indexes the component when a release is created
-# from a project that is a catalog resource.
+validate:yamllint:
+  stage: validate
+  image: python:3.14-alpine
+  script:
+    - pip install yamllint
+    - yamllint .
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_COMMIT_TAG || $CI_PIPELINE_SOURCE == "merge_request_event"'
 
-publish-cicd-catalog-component-release:
+release:catalog-component:
   stage: release
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs: [validate-catalog-component-yaml-syntax]
-  rules:
-    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+/'
+  image:
+    name: registry.gitlab.com/gitlab-org/cli:v1.124.0
+    entrypoint: [""]
+  needs:
+    - validate:fragments-are-in-sync
+    - validate:yamllint
   script:
-    - echo "[release] Publishing catalog component version $CI_COMMIT_TAG"
+    - echo "Releasing $CI_COMMIT_TAG"
   release:
     tag_name: "$CI_COMMIT_TAG"
-    name: "Auto-Detect Build Test Deploy — $CI_COMMIT_TAG"
-    description: |
-      GitLab CI/CD Catalog component: auto-detect-build-test-deploy
-
-      Zero-config CI/CD — auto-detects Node.js, Java, Go, Python, PHP, Rust, .NET.
-      Stages: detect → build → test → lint → docker → deploy.
-
-      Usage:
-        include:
-          - component: git.example.com/cicd-auto-pipeline/gitlab-ci-templates/auto-detect-build-test-deploy@$CI_COMMIT_TAG
-            inputs:
-              deploy_target: docker-compose
-    ref: "$CI_COMMIT_TAG"
-    assets:
-      links:
-        - name: "Component source"
-          url: "$CI_PROJECT_URL/-/tree/$CI_COMMIT_TAG/templates/auto-detect-build-test-deploy"
-          link_type: runbook
+    description: "Release $CI_COMMIT_TAG of the auto-detect-build-test-deploy component and the jobs/ fragments."
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'

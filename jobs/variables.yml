@@ -1,0 +1,45 @@
+# Defaults for every fragment in jobs/. Override any of them in your own
+# .gitlab-ci.yml `variables:` block or in Settings > CI/CD > Variables.
+# Image versions were checked against endoflife.date / Docker Hub on 2026-10-26.
+variables:
+  # Language toolchains (used in `image:`)
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.14"
+  GO_VERSION: "1.27"
+  JAVA_VERSION: "25"
+  PHP_IMAGE: "composer:2"
+  RUST_IMAGE: "rust:1-alpine"
+  DOTNET_VERSION: "10.0"
+
+  # Docker build and push (needs a runner that allows the docker:dind service)
+  DOCKER_BUILD_ENABLED: "auto"      # auto = build when a Dockerfile exists, "true" = always, "false" = never
+  DOCKER_IMAGE: ""                  # defaults to $CI_REGISTRY_IMAGE
+  DOCKERFILE_PATH: "Dockerfile"
+  DOCKER_BUILD_CONTEXT: "."
+  DOCKER_BUILD_ARGS: ""             # extra `docker build` flags, e.g. "--target prod"
+
+  # Security scans
+  SECURITY_SCAN_ENABLED: "true"
+  SAST_ENABLED: "true"
+  SECRET_DETECTION_ENABLED: "true"
+  DEPENDENCY_SCAN_ENABLED: "true"
+  CONTAINER_SCAN_ENABLED: "true"
+
+  # Deploy: empty = no deploy. One of docker-compose | rsync | s3 | k8s | helm
+  DEPLOY_TARGET: ""
+  DEPLOY_HOST: ""
+  DEPLOY_USER: "deploy"
+  DEPLOY_PORT: "22"
+  DEPLOY_PATH: "/opt/app"
+  DEPLOY_KNOWN_HOSTS: ""            # output of `ssh-keyscan -p PORT HOST`, taken once and reviewed
+  DEPLOY_RSYNC_SOURCE: "dist/"
+  S3_BUCKET: ""
+  S3_SOURCE: "dist/"
+  CLOUDFRONT_DISTRIBUTION_ID: ""
+  K8S_NAMESPACE: "default"
+  K8S_DEPLOYMENT: ""
+  K8S_CONTAINER: "app"
+  HELM_RELEASE: ""
+  HELM_CHART: "./helm"
+  HELM_NAMESPACE: "default"
+  DEPLOY_TIMEOUT: "600"
